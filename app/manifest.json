@@ -1,0 +1,8 @@
+{
+    "id": "rmnews",
+    "name": "新闻 News",
+    "entry": "/ui/main.qml",
+    "loadsBackend": false,
+    "supportsScaling": true,
+    "canHaveMultipleFrontends": false
+}
