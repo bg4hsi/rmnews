@@ -28,7 +28,9 @@ Rectangle {
     readonly property string activeTool: tool === "lookup" && !articleIsEnglish ? "highlight" : tool
     property var notes: ({ hl: [], ink: [] })
     readonly property color highlightColor: "#FFD600"
-    readonly property color inkColor: "#0D47A1"
+    // Ink is black: it is drawn in a monochrome refresh mode, so black is what it really looks
+    // like, and it never needs a slow color refresh afterwards.
+    readonly property color inkColor: "black"
 
     property bool showVocab: false
     property var vocabList: []
@@ -419,8 +421,28 @@ Rectangle {
     property var pendingHl: []
 
     // Animation mode is black & white, so it only covers where the pen has been on this page
-    // (document coordinates, padded); the rest of the page, pictures included, stays in color.
+    // (document coordinates, padded) and never the lead picture, which stays in color; ink drawn
+    // over the picture is refreshed in Content mode instead (slower, but the photo keeps color).
     property rect writeBox: Qt.rect(0, 0, 0, 0)
+    readonly property var imageSpan: {
+        // Vertical extent of the picture block in document coordinates, or null.
+        var dummy = pageStarts;     // re-evaluate after layout
+        var b = blockKeys.indexOf("b3");
+        if (b < 0 || b + 1 >= blockStarts.length) return null;
+        return { top: body.positionToRectangle(blockStarts[b]).y,
+                 bottom: body.positionToRectangle(blockStarts[b + 1]).y };
+    }
+    // writeBox split around the picture: [above, below], each { y, h } in document coordinates.
+    function writeBands() {
+        var b = writeBox;
+        if (b.width <= 0) return [];
+        var img = imageSpan;
+        if (!img || b.y + b.height <= img.top || b.y >= img.bottom) return [{ y: b.y, h: b.height }];
+        var out = [];
+        if (b.y < img.top) out.push({ y: b.y, h: img.top - b.y });
+        if (b.y + b.height > img.bottom) out.push({ y: img.bottom, h: b.y + b.height - img.bottom });
+        return out;
+    }
     function growWriteBox(x, y) {
         var pad = 140 * u;
         var b = writeBox;
@@ -1055,13 +1077,15 @@ Rectangle {
 
                 // Where the pen writes: Animation mode keeps ink live even with a palm on the glass
                 // (Pen mode stalls then), but it is monochrome, so it stays as small as possible.
-                DisplayMethodArea {
-                    visible: (pager.penDown || root.inkSession) && root.writeBox.width > 0
-                    x: root.writeBox.x
-                    y: root.writeBox.y - (root.pageStarts[root.pageIdx] || 0)
-                    width: root.writeBox.width
-                    height: root.writeBox.height
-                    displayMethod: root.modeAnimation
+                Repeater {
+                    model: pager.penDown || root.inkSession ? root.writeBands() : []
+                    DisplayMethodArea {
+                        x: root.writeBox.x
+                        y: modelData.y - (root.pageStarts[root.pageIdx] || 0)
+                        width: root.writeBox.width
+                        height: modelData.h
+                        displayMethod: root.modeAnimation
+                    }
                 }
 
                 // Handwritten ink, plus the stroke currently being drawn; scrolls with the text.
