@@ -1008,7 +1008,7 @@ Rectangle {
                 DisplayMethodArea {
                     anchors.fill: parent
                     displayMethod: pager.penDown || root.inkSession ? root.modePen
-                                   : pager.holding ? root.modeMono : root.modeContent
+                                   : pager.holding || touchArea.holding ? root.modeMono : root.modeContent
                 }
 
                 TextEdit {
@@ -1074,14 +1074,79 @@ Rectangle {
                 font.family: root.sansFamily
             }
 
+            // Fingers/palm and the Marker are separate pointing devices in Qt, so each gets its own
+            // area: a palm resting on the glass must never hold the input the pen needs.
+            MouseArea {
+                id: touchArea
+                anchors.fill: parent
+                pressAndHoldInterval: 450
+                property real px: 0
+                property real py: 0
+                property bool holding: false    // long-press word selection in progress
+                property bool held: false
+                property bool swipeOnly: false  // a writing tool is active: taps are palms
+                property int anchorA: -1
+                property int anchorB: -1
+
+                onPressed: (mouse) => {
+                    if (root.penNear()) {
+                        mouse.accepted = false;     // palm while writing
+                        return;
+                    }
+                    root.lastTouchAt = Date.now();
+                    swipeOnly = root.writingTool;
+                    px = mouse.x; py = mouse.y; holding = false; held = false;
+                }
+
+                onPressAndHold: (mouse) => {
+                    held = true;
+                    if (swipeOnly || root.penNear() || !root.articleIsEnglish) return;
+                    var p = pager.posAt(mouse.x, mouse.y);
+                    var w = p < 0 ? null : root.wordAt(p);
+                    if (!w) return;
+                    holding = true;
+                    anchorA = w.start;
+                    anchorB = w.end;
+                    body.select(w.start, w.end);
+                }
+
+                onPositionChanged: (mouse) => {
+                    if (!holding) return;
+                    var p = pager.posAt(mouse.x, mouse.y);
+                    var w = p < 0 ? null : root.wordAt(p);
+                    if (w) body.select(Math.min(anchorA, w.start), Math.max(anchorB, w.end));
+                }
+
+                onReleased: (mouse) => {
+                    root.lastTouchAt = Date.now();
+                    if (holding) {
+                        holding = false;
+                        var a = body.selectionStart, b = body.selectionEnd;
+                        popup.show(body.getText(a, b), root.sentenceAround(a, b), body.positionToRectangle(a).y - (root.pageStarts[root.pageIdx] || 0));
+                        return;
+                    }
+                    if (root.penNear()) return;     // a palm that rested while the pen wrote
+                    var dx = mouse.x - px;
+                    var swipe = Math.abs(dx) > 120 * root.u && Math.abs(dx) > Math.abs(mouse.y - py);
+                    if (swipe) {
+                        root.turn(dx < 0 ? 1 : -1);
+                    } else if (swipeOnly || held) {
+                        return;                     // palm landing / long press on blank space
+                    } else if (popup.visible) {
+                        popup.hide();
+                    } else {
+                        root.turn(mouse.x < width * 0.3 ? -1 : 1);
+                    }
+                }
+            }
+
             MouseArea {
                 id: pager
                 anchors.fill: parent
                 pressAndHoldInterval: 450
                 property real px: 0
                 property real py: 0
-                property bool holding: false    // long-press word selection in progress
-                property bool swipeOnly: false  // touch while a writing tool is active
+                property bool holding: false    // pen long-press word selection (lookup tool)
                 property bool held: false
                 property bool penDown: false    // the Marker is on the glass
                 property real penTravel: 0
@@ -1091,7 +1156,7 @@ Rectangle {
 
                 function docY(my) { return my + (root.pageStarts[root.pageIdx] || 0); }
 
-                // Text position under the finger, or -1 when it's in a gap between lines.
+                // Text position under the pointer, or -1 when it's in a gap between lines.
                 function posAt(mx, my) {
                     var y = docY(my);
                     var p = body.positionAt(mx, y);
@@ -1099,28 +1164,21 @@ Rectangle {
                     return (y < r.y - 6 * root.u || y > r.y + r.height + 6 * root.u) ? -1 : p;
                 }
 
-
                 onPressed: (mouse) => {
-                    var isPen = mouse.source === Qt.MouseEventNotSynthesized;
-                    if (!isPen && root.penNear()) {
-                        mouse.accepted = false;     // palm while writing
+                    if (mouse.source !== Qt.MouseEventNotSynthesized) {
+                        mouse.accepted = false;     // touches go to touchArea below
                         return;
                     }
-                    if (isPen) root.notePen(); else root.lastTouchAt = Date.now();
-                    swipeOnly = !isPen && root.writingTool;
+                    root.notePen();
                     px = mouse.x; py = mouse.y; holding = false; held = false;
-                    penDown = isPen;
-                    if (penDown) {
-                        stroke = [{ x: mouse.x, y: docY(mouse.y) }];
-                        penTravel = 0;
-                    }
+                    penDown = true;
+                    stroke = [{ x: mouse.x, y: docY(mouse.y) }];
+                    penTravel = 0;
                 }
 
                 onPressAndHold: (mouse) => {
                     held = true;
-                    if (swipeOnly) return;
-                    if (penDown && (root.activeTool !== "lookup" || penTravel > 12 * root.u)) return;
-                    if (!root.articleIsEnglish) return;
+                    if (root.activeTool !== "lookup" || penTravel > 12 * root.u || !root.articleIsEnglish) return;
                     var p = posAt(mouse.x, mouse.y);
                     var w = p < 0 ? null : root.wordAt(p);
                     if (!w) return;
@@ -1131,6 +1189,7 @@ Rectangle {
                 }
 
                 onPositionChanged: (mouse) => {
+                    root.notePen();
                     if (holding) {
                         var p = posAt(mouse.x, mouse.y);
                         var w = p < 0 ? null : root.wordAt(p);
@@ -1138,7 +1197,6 @@ Rectangle {
                         return;
                     }
                     if (!penDown) return;
-                    root.notePen();
                     var last = stroke[stroke.length - 1];
                     var x = mouse.x, y = docY(mouse.y);
                     var d = Math.sqrt((x - last.x) * (x - last.x) + (y - last.y) * (y - last.y));
@@ -1157,32 +1215,23 @@ Rectangle {
                 onCanceled: { penDown = false; root.clearSegs(root.activeTool); }
 
                 onReleased: (mouse) => {
-                    var wasPen = penDown;
                     penDown = false;
-                    if (wasPen) root.notePen(); else root.lastTouchAt = Date.now();
+                    root.notePen();
                     if (holding) {
                         holding = false;
                         var a = body.selectionStart, b = body.selectionEnd;
                         popup.show(body.getText(a, b), root.sentenceAround(a, b), body.positionToRectangle(a).y - (root.pageStarts[root.pageIdx] || 0));
                         return;
                     }
-                    if (wasPen && penTravel > 12 * root.u) {
+                    if (penTravel > 12 * root.u) {
                         if (root.activeTool === "lookup") popup.hide();
                         root.penStroke(stroke);
                         return;
                     }
-                    if (wasPen) root.clearSegs(root.activeTool);     // a dot, not a stroke
-                    var dx = mouse.x - px;
-                    var swipe = Math.abs(dx) > 120 * root.u && Math.abs(dx) > Math.abs(mouse.y - py);
-                    if (swipeOnly && !(swipe && !root.penNear())) return;
-                    if (held && !swipe) return;     // long press on blank space: do nothing
-                    if (swipe) {
-                        root.turn(dx < 0 ? 1 : -1);
-                    } else if (popup.visible) {
-                        popup.hide();
-                    } else {
-                        root.turn(mouse.x < width * 0.3 ? -1 : 1);
-                    }
+                    root.clearSegs(root.activeTool);    // a dot, not a stroke
+                    if (held) return;
+                    if (popup.visible) popup.hide();
+                    else root.turn(mouse.x < width * 0.3 ? -1 : 1);
                 }
             }
         }
@@ -1360,7 +1409,7 @@ Rectangle {
         onPositionChanged: (mouse) => {
             // Qt Quick also emits hover moves while a finger drags; those are not the pen.
             if (mouse.source !== Qt.MouseEventNotSynthesized) return;
-            if ((pager.pressed && !pager.penDown) || Date.now() - root.lastTouchAt < 500) return;
+            if (touchArea.pressed || Date.now() - root.lastTouchAt < 500) return;
             root.notePen();
         }
     }
