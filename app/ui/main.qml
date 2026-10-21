@@ -288,7 +288,6 @@ Rectangle {
 
     function closeArticle() {
         if (pendingHl.length) flushHighlights();
-        inkIdle.stop();
         inkSession = false;
         clearSegs();
         articleToken++;
@@ -302,6 +301,12 @@ Rectangle {
 
     function renderArticle() {
         if (!article) return;
+        if (pendingHl.length) {
+            notes = { hl: mergeHighlights(notes.hl.concat(pendingHl)), ink: notes.ink };
+            pendingHl = [];
+        }
+        clearSegs("highlight");
+        inkSession = false;
         var a = article;
         // Text stays pure black (Gallery 3 dithers greys into speckles); color is used for
         // accents and pictures only.
@@ -394,18 +399,12 @@ Rectangle {
     property var blockStarts: []    // document position where each block begins
     property var inkPaths: []       // ink strokes resolved to document coordinates: [{ src, w, pts }]
 
-    // On Gallery 3 every repaint of the page in Content mode is a slow color flash. While the
-    // reader is writing we therefore stay in Pen mode, keep freshly drawn segments on screen as
-    // they are (no repaint on pen-up) and fold pending highlights into the text only once the
-    // pen has rested for a moment.
+    // On Gallery 3 every repaint in Content mode is a slow color flash, and so is switching an
+    // area back from Pen to Content. Once the reader starts writing on a page we therefore stay
+    // in Pen mode, keep freshly drawn segments on screen as they are and only fold pending
+    // highlights into the text when the page is repainted anyway (turn, close, font, bilingual).
     property bool inkSession: false
     property var pendingHl: []
-
-    Timer {
-        id: inkIdle
-        interval: 2500
-        onTriggered: { root.inkSession = false; root.flushHighlights(); }
-    }
 
     function clearSegs(kind) {
         for (var j = freshSegs.count - 1; j >= 0; j--)
@@ -514,16 +513,14 @@ Rectangle {
             if (e > s) hl.push({ k: blockKeys[b].charAt(0), i: +blockKeys[b].slice(1), s: s, e: e });
         }
         pendingHl = pendingHl.concat(hl);
-        // Saved right away; drawn into the text when the pen rests (see inkIdle).
+        // Saved right away; drawn into the text at the next repaint (see inkSession).
         if (article) News.saveNotes(article.item.id, { hl: mergeHighlights(notes.hl.concat(pendingHl)), ink: notes.ink });
     }
 
+    // Highlights drawn since the last repaint become part of the text (renderArticle merges them).
     function flushHighlights() {
-        if (!pendingHl.length || !article) { clearSegs("highlight"); return; }
-        notes = { hl: mergeHighlights(notes.hl.concat(pendingHl)), ink: notes.ink };
-        pendingHl = [];
-        renderArticle();
-        clearSegs("highlight");
+        if (pendingHl.length && article) renderArticle();
+        else clearSegs("highlight");
     }
 
     // The stroke stays on screen exactly as drawn (its live segments); it only joins
@@ -570,10 +567,7 @@ Rectangle {
 
     function penStroke(pts) {
         if (!article || !body.text) return;
-        if (activeTool === "highlight" || activeTool === "pen") {
-            inkSession = true;
-            inkIdle.restart();
-        }
+        if (activeTool !== "lookup") inkSession = true;
         switch (activeTool) {
         case "lookup":
             var rg = strokeRange(pts);
@@ -653,7 +647,13 @@ Rectangle {
 
     function turn(delta) {
         popup.hide();
-        if (pendingHl.length) { inkIdle.stop(); inkSession = false; flushHighlights(); }
+        if (article && (pendingHl.length || inkSession)) {
+            // The new page repaints in full anyway: fold in highlights, back to Content mode.
+            // Highlights don't change the layout, so stay on the page being turned from.
+            flushHighlights();
+            restoreRatio = 0;
+            inkSession = false;
+        }
         var cur = function () { return article ? pageIdx : showVocab ? vocabPage : listPage; };
         var before = cur();
         if (article) {
@@ -1094,7 +1094,6 @@ Rectangle {
                     if (penDown) {
                         stroke = [{ x: mouse.x, y: docY(mouse.y) }];
                         penTravel = 0;
-                        inkIdle.stop();     // still writing: no flush, stay in Pen mode
                     }
                 }
 
