@@ -287,6 +287,10 @@ Rectangle {
     }
 
     function closeArticle() {
+        if (pendingHl.length) flushHighlights();
+        inkIdle.stop();
+        inkSession = false;
+        clearSegs();
         articleToken++;
         article = null;
         popup.hide();
@@ -390,6 +394,24 @@ Rectangle {
     property var blockStarts: []    // document position where each block begins
     property var inkPaths: []       // ink strokes resolved to document coordinates: [{ src, w, pts }]
 
+    // On Gallery 3 every repaint of the page in Content mode is a slow color flash. While the
+    // reader is writing we therefore stay in Pen mode, keep freshly drawn segments on screen as
+    // they are (no repaint on pen-up) and fold pending highlights into the text only once the
+    // pen has rested for a moment.
+    property bool inkSession: false
+    property var pendingHl: []
+
+    Timer {
+        id: inkIdle
+        interval: 2500
+        onTriggered: { root.inkSession = false; root.flushHighlights(); }
+    }
+
+    function clearSegs(kind) {
+        for (var j = freshSegs.count - 1; j >= 0; j--)
+            if (!kind || freshSegs.get(j).g === kind) freshSegs.remove(j);
+    }
+
     function markup(text, k, i) {
         var rs = notes.hl.filter(function (x) { return x.k === k && x.i === i; })
                          .sort(function (x, y) { return x.s - y.s; });
@@ -428,6 +450,8 @@ Rectangle {
             out.push({ src: idx, w: st.w, pts: st.pts.map(function (p) { return Qt.point(p[0], top + p[1]); }) });
         });
         inkPaths = out;
+        clearSegs("pen");
+        clearSegs("erase");
     }
 
     // Text range a pen stroke points at: an underline (or strike-through) marks the words
@@ -482,28 +506,40 @@ Rectangle {
     }
 
     function addHighlight(rg) {
-        var hl = notes.hl.slice();
+        var hl = [];
         for (var b = blockAt(rg.start); b <= blockAt(rg.end - 1); b++) {
             var start = blockStarts[b];
             var end = b + 1 < blockStarts.length ? blockStarts[b + 1] - 1 : body.length;
             var s = Math.max(rg.start, start) - start, e = Math.min(rg.end, end) - start;
             if (e > s) hl.push({ k: blockKeys[b].charAt(0), i: +blockKeys[b].slice(1), s: s, e: e });
         }
-        setNotes({ hl: mergeHighlights(hl), ink: notes.ink });
-        renderArticle();
+        pendingHl = pendingHl.concat(hl);
+        // Saved right away; drawn into the text when the pen rests (see inkIdle).
+        if (article) News.saveNotes(article.item.id, { hl: mergeHighlights(notes.hl.concat(pendingHl)), ink: notes.ink });
     }
 
+    function flushHighlights() {
+        if (!pendingHl.length || !article) { clearSegs("highlight"); return; }
+        notes = { hl: mergeHighlights(notes.hl.concat(pendingHl)), ink: notes.ink };
+        pendingHl = [];
+        renderArticle();
+        clearSegs("highlight");
+    }
+
+    // The stroke stays on screen exactly as drawn (its live segments); it only joins
+    // inkPaths at the next layout, so lifting the pen causes no repaint.
     function addInk(pts) {
         var b = blockAt(body.positionAt(pts[0].x, pts[0].y));
         var top = body.positionToRectangle(blockStarts[b]).y;
         var stroke = { k: blockKeys[b].charAt(0), i: +blockKeys[b].slice(1), w: 4,
                        pts: pts.map(function (p) { return [Math.round(p.x), Math.round(p.y - top)]; }) };
         setNotes({ hl: notes.hl, ink: notes.ink.concat([stroke]) });
-        layoutInk();
     }
 
     // Remove ink strokes and highlights the eraser stroke passes over.
     function eraseAlong(pts) {
+        flushHighlights();
+        layoutInk();
         var R = 30 * u;
         var step = Math.max(1, Math.floor(pts.length / 80));
         var gone = {};
@@ -534,17 +570,21 @@ Rectangle {
 
     function penStroke(pts) {
         if (!article || !body.text) return;
+        if (activeTool === "highlight" || activeTool === "pen") {
+            inkSession = true;
+            inkIdle.restart();
+        }
         switch (activeTool) {
         case "lookup":
             var rg = strokeRange(pts);
-            if (!rg) return;
+            if (!rg) { clearSegs("lookup"); return; }
             body.select(rg.start, rg.end);
             popup.show(body.getText(rg.start, rg.end), sentenceAround(rg.start, rg.end),
                        body.positionToRectangle(rg.start).y - (pageStarts[pageIdx] || 0));
             break;
         case "highlight":
             var hr = strokeRange(pts);
-            if (hr) addHighlight(hr);
+            if (hr) addHighlight(hr); else clearSegs("highlight");
             break;
         case "pen":
             addInk(pts);
@@ -613,6 +653,7 @@ Rectangle {
 
     function turn(delta) {
         popup.hide();
+        if (pendingHl.length) { inkIdle.stop(); inkSession = false; flushHighlights(); }
         var cur = function () { return article ? pageIdx : showVocab ? vocabPage : listPage; };
         var before = cur();
         if (article) {
@@ -955,7 +996,8 @@ Rectangle {
                 // down, fast black & white while a finger drags a word selection.
                 DisplayMethodArea {
                     anchors.fill: parent
-                    displayMethod: pager.penDown ? root.modePen : pager.holding ? root.modeMono : root.modeContent
+                    displayMethod: pager.penDown || root.inkSession ? root.modePen
+                                   : pager.holding ? root.modeMono : root.modeContent
                 }
 
                 TextEdit {
@@ -992,24 +1034,22 @@ Rectangle {
                         }
                     }
 
-                    // The stroke being drawn, one segment appended per pen sample.
+                    // Strokes drawn since the last layout, one segment per pen sample; each keeps the
+                    // style of the tool it was drawn with.
                     Repeater {
-                        model: liveSegs
+                        model: ListModel { id: freshSegs }
                         Rectangle {
-                            readonly property real lw: (root.activeTool === "highlight" ? 30 : root.activeTool === "erase" ? 36 : 4) * root.u
                             readonly property real dx: x1 - x0
                             readonly property real dy: y1 - y0
-                            x: x0 - lw / 2
-                            y: y0 - lw / 2
-                            width: Math.sqrt(dx * dx + dy * dy) + lw
-                            height: lw
-                            radius: lw / 2
+                            x: x0 - w / 2
+                            y: y0 - w / 2
+                            width: Math.sqrt(dx * dx + dy * dy) + w
+                            height: w
+                            radius: w / 2
                             antialiasing: true
-                            color: root.activeTool === "highlight" ? "#FFD600"
-                                   : root.activeTool === "erase" ? "#9E9E9E"
-                                   : root.activeTool === "pen" ? root.inkColor : "black"
-                            opacity: root.activeTool === "highlight" ? 0.5 : 1
-                            transform: Rotation { origin.x: lw / 2; origin.y: lw / 2; angle: Math.atan2(dy, dx) * 180 / Math.PI }
+                            color: c
+                            opacity: o
+                            transform: Rotation { origin.x: w / 2; origin.y: w / 2; angle: Math.atan2(dy, dx) * 180 / Math.PI }
                         }
                     }
                 }
@@ -1047,7 +1087,6 @@ Rectangle {
                     return (y < r.y - 6 * root.u || y > r.y + r.height + 6 * root.u) ? -1 : p;
                 }
 
-                ListModel { id: liveSegs }
 
                 onPressed: (mouse) => {
                     px = mouse.x; py = mouse.y; holding = false; held = false;
@@ -1055,7 +1094,7 @@ Rectangle {
                     if (penDown) {
                         stroke = [{ x: mouse.x, y: docY(mouse.y) }];
                         penTravel = 0;
-                        liveSegs.clear();
+                        inkIdle.stop();     // still writing: no flush, stay in Pen mode
                     }
                 }
 
@@ -1086,16 +1125,20 @@ Rectangle {
                     if (d >= 3 * root.u) {
                         stroke.push({ x: x, y: y });
                         penTravel += d;
-                        liveSegs.append({ x0: last.x, y0: last.y, x1: x, y1: y });
+                        var t = root.activeTool;
+                        freshSegs.append({ x0: last.x, y0: last.y, x1: x, y1: y, g: t,
+                                           w: (t === "highlight" ? 30 : t === "erase" ? 36 : 4) * root.u,
+                                           c: t === "highlight" ? "#FFD600" : t === "erase" ? "#9E9E9E"
+                                              : t === "pen" ? String(root.inkColor) : "#000000",
+                                           o: t === "highlight" ? 0.5 : 1 });
                     }
                 }
 
-                onCanceled: { penDown = false; liveSegs.clear(); }
+                onCanceled: { penDown = false; root.clearSegs(root.activeTool); }
 
                 onReleased: (mouse) => {
                     var wasPen = penDown;
                     penDown = false;
-                    liveSegs.clear();
                     if (holding) {
                         holding = false;
                         var a = body.selectionStart, b = body.selectionEnd;
@@ -1103,10 +1146,11 @@ Rectangle {
                         return;
                     }
                     if (wasPen && penTravel > 12 * root.u) {
-                        popup.hide();
+                        if (root.activeTool === "lookup") popup.hide();
                         root.penStroke(stroke);
                         return;
                     }
+                    if (wasPen) root.clearSegs(root.activeTool);     // a dot, not a stroke
                     if (held) return;   // long press on blank space: do nothing
                     var dx = mouse.x - px;
                     if (Math.abs(dx) > 120 * root.u && Math.abs(dx) > Math.abs(mouse.y - py)) {
@@ -1380,6 +1424,7 @@ Rectangle {
             token++;
             visible = false;
             body.deselect();
+            root.clearSegs("lookup");
         }
 
         function translateSentence() {

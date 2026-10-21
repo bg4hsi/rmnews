@@ -6,8 +6,9 @@ Usage: run.py WORKDIR STEPS_JSON
   STEPS_JSON: [[kind, arg, wait_ms], ...] with kind one of
     js      evaluate arg against the host item (the app is `app`)
     shot    save a screenshot to shots/<arg>
-    press / move / release   mouse event at [x, y]; add "pen" as third arg item to mark it
-                             as a non-synthesized (stylus) event, otherwise it is touch-like
+    press / move / release   at [x, y]: a real touch point (like a finger on the tablet), or with
+                             "pen" as third item a non-synthesized mouse event, which is how
+                             xochitl delivers the Marker
 """
 import json
 import os
@@ -17,6 +18,7 @@ from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt, QTimer
 from PySide6.QtGui import QFontDatabase, QGuiApplication, QMouseEvent
 from PySide6.QtQml import QQmlExpression
 from PySide6.QtQuick import QQuickView
+from PySide6.QtTest import QTest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.normpath(os.path.join(HERE, "..", "..", "app"))
@@ -57,14 +59,29 @@ def js(code):
     return r
 
 
+touch = None
+
+
+def finger(kind, x, y):
+    global touch
+    if touch is None:
+        touch = QTest.createTouchDevice()
+    seq = QTest.touchEvent(v, touch)
+    pt = QPoint(int(x), int(y))
+    {"press": seq.press, "move": seq.move, "release": seq.release}[kind](0, pt, v)
+    seq.commit()
+
+
 def mouse(kind, x, y, pen):
+    if not pen:
+        return finger(kind, x, y)
     pt = QPointF(x, y)
     types = {"press": QEvent.MouseButtonPress, "move": QEvent.MouseMove, "release": QEvent.MouseButtonRelease}
     button = Qt.NoButton if kind == "move" else Qt.LeftButton
     buttons = Qt.NoButton if kind == "release" else Qt.LeftButton
     ev = QMouseEvent(types[kind], pt, pt, QPointF(v.mapToGlobal(QPoint(int(x), int(y)))),
                      button, buttons, Qt.NoModifier,
-                     Qt.MouseEventNotSynthesized if pen else Qt.MouseEventSynthesizedBySystem)
+                     Qt.MouseEventNotSynthesized)
     QCoreApplication.sendEvent(v, ev)
 
 
