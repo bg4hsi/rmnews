@@ -242,6 +242,7 @@ Rectangle {
     function openArticle(item) {
         var token = ++articleToken;
         popup.hide();
+        tool = "lookup";        // articles open for reading; writing tools are picked explicitly
         article = { item: item, paras: [], trans: [], summaryOnly: false, image: "" };
         articleStatus = lang === "zh" ? "正在打开 …" : "Opening …";
         body.text = "";
@@ -407,9 +408,11 @@ Rectangle {
     property var pendingHl: []
 
     // Palm rejection. Touches (palm or finger) are ignored on the page while the Marker is
-    // down, hovering, or was used within the last 1.5 s, and always while a writing tool is
-    // selected; footer buttons ignore touches while the pen is near.
+    // down, hovering, or was used within the last 1.5 s. With a writing tool selected a touch
+    // can only swipe pages (a resting palm lands like a tap); footer buttons ignore touches
+    // while the pen is near.
     property double lastPenAt: 0
+    property double lastTouchAt: 0
     readonly property bool writingTool: article !== null && activeTool !== "lookup"
     function notePen() { lastPenAt = Date.now(); }
     function penNear() { return pager.penDown || Date.now() - lastPenAt < 1500; }
@@ -1078,6 +1081,7 @@ Rectangle {
                 property real px: 0
                 property real py: 0
                 property bool holding: false    // long-press word selection in progress
+                property bool swipeOnly: false  // touch while a writing tool is active
                 property bool held: false
                 property bool penDown: false    // the Marker is on the glass
                 property real penTravel: 0
@@ -1098,11 +1102,12 @@ Rectangle {
 
                 onPressed: (mouse) => {
                     var isPen = mouse.source === Qt.MouseEventNotSynthesized;
-                    if (!isPen && (root.penNear() || root.writingTool)) {
-                        mouse.accepted = false;     // palm (or finger) while writing
+                    if (!isPen && root.penNear()) {
+                        mouse.accepted = false;     // palm while writing
                         return;
                     }
-                    if (isPen) root.notePen();
+                    if (isPen) root.notePen(); else root.lastTouchAt = Date.now();
+                    swipeOnly = !isPen && root.writingTool;
                     px = mouse.x; py = mouse.y; holding = false; held = false;
                     penDown = isPen;
                     if (penDown) {
@@ -1113,6 +1118,7 @@ Rectangle {
 
                 onPressAndHold: (mouse) => {
                     held = true;
+                    if (swipeOnly) return;
                     if (penDown && (root.activeTool !== "lookup" || penTravel > 12 * root.u)) return;
                     if (!root.articleIsEnglish) return;
                     var p = posAt(mouse.x, mouse.y);
@@ -1153,7 +1159,7 @@ Rectangle {
                 onReleased: (mouse) => {
                     var wasPen = penDown;
                     penDown = false;
-                    if (wasPen) root.notePen();
+                    if (wasPen) root.notePen(); else root.lastTouchAt = Date.now();
                     if (holding) {
                         holding = false;
                         var a = body.selectionStart, b = body.selectionEnd;
@@ -1166,9 +1172,11 @@ Rectangle {
                         return;
                     }
                     if (wasPen) root.clearSegs(root.activeTool);     // a dot, not a stroke
-                    if (held) return;   // long press on blank space: do nothing
                     var dx = mouse.x - px;
-                    if (Math.abs(dx) > 120 * root.u && Math.abs(dx) > Math.abs(mouse.y - py)) {
+                    var swipe = Math.abs(dx) > 120 * root.u && Math.abs(dx) > Math.abs(mouse.y - py);
+                    if (swipeOnly && !(swipe && !root.penNear())) return;
+                    if (held && !swipe) return;     // long press on blank space: do nothing
+                    if (swipe) {
                         root.turn(dx < 0 ? 1 : -1);
                     } else if (popup.visible) {
                         popup.hide();
@@ -1349,7 +1357,12 @@ Rectangle {
         z: 100
         acceptedButtons: Qt.NoButton
         hoverEnabled: true
-        onPositionChanged: (mouse) => { if (mouse.source === Qt.MouseEventNotSynthesized) root.notePen(); }
+        onPositionChanged: (mouse) => {
+            // Qt Quick also emits hover moves while a finger drags; those are not the pen.
+            if (mouse.source !== Qt.MouseEventNotSynthesized) return;
+            if ((pager.pressed && !pager.penDown) || Date.now() - root.lastTouchAt < 500) return;
+            root.notePen();
+        }
     }
 
     // ------------------------------------------------------------ lookup popup
