@@ -505,6 +505,69 @@ function lookup(word, cb) {
     });
 }
 
+// ---------------------------------------------------------------- annotations
+// cache/note-<id>.json  { hl: [{ k, i, s, e }], ink: [{ k, i, w, pts: [[x, dy], ...] }] }
+// k/i name the block an annotation belongs to ("p" = paragraph i, "t" = its translation,
+// "b" = other block i), so marks follow their paragraph when the layout changes.
+
+function loadNotes(id, cb) {
+    readJson(cacheUrl("note-" + id + ".json"), function (v) { cb(v || { hl: [], ink: [] }); });
+}
+
+function saveNotes(id, notes) { put(cacheUrl("note-" + id + ".json"), JSON.stringify(notes)); }
+
+// ---------------------------------------------------------------- vocabulary
+// vocab.json is the list (newest first); vocab.tsv is rewritten alongside for Anki import.
+
+var vocab = null;
+
+function loadVocab(cb) {
+    if (vocab) return cb(vocab);
+    readJson(dataDir + "vocab.json", function (v) {
+        vocab = v || [];
+        cb(vocab);
+    });
+}
+
+function vocabIndex(word) {
+    if (!vocab) return -1;
+    var w = word.toLowerCase();
+    for (var i = 0; i < vocab.length; i++) if (vocab[i].word.toLowerCase() === w) return i;
+    return -1;
+}
+
+function inVocab(word) { return vocabIndex(word) >= 0; }
+
+// entry: { word, phonetic, meaning, sentence, article: { id, title, source, link, time, hasImage } }
+function addVocab(entry) {
+    var i = vocabIndex(entry.word);
+    if (i >= 0) {
+        var old = vocab.splice(i, 1)[0];
+        entry.count = (old.count || 1) + 1;
+        if (!entry.sentence) entry.sentence = old.sentence;
+    } else {
+        entry.count = 1;
+    }
+    entry.added = Date.now();
+    vocab.unshift(entry);
+    saveVocab();
+}
+
+function removeVocab(word) {
+    var i = vocabIndex(word);
+    if (i >= 0) { vocab.splice(i, 1); saveVocab(); }
+}
+
+function saveVocab() {
+    put(dataDir + "vocab.json", JSON.stringify(vocab));
+    var clean = function (s) { return (s || "").replace(/\t/g, " ").replace(/\n/g, "<br>"); };
+    var lines = vocab.map(function (v) {
+        return [v.word, v.phonetic ? "/" + v.phonetic + "/" : "", clean(v.meaning), clean(v.sentence),
+                v.article ? clean(v.article.source + " · " + v.article.title) : ""].join("\t");
+    });
+    put(dataDir + "vocab.tsv", lines.join("\n") + "\n");
+}
+
 // ---------------------------------------------------------------- persistence
 
 function loadState(cb) {

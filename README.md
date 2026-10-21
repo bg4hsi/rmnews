@@ -15,6 +15,13 @@
   - 长按后拖动：选中短语，在线翻译
   - 「翻译整句」：翻译所在句子
 - **中英对照**：英文文章逐段加中文译文，译文会缓存下来离线可看
+- **手写笔（Marker）**：笔负责书写，手指负责翻页，两者互不干扰。文章页顶栏可以切换工具：
+  - 查词：在单词或短语下面划一道（或圈起来）即可翻译
+  - 荧光：划过的文字标黄，高亮锚定在文字上，调字号、开关对照都不会错位
+  - 钢笔：自由书写，笔迹跟随所在段落
+  - 橡皮：擦掉划过的笔迹和高亮（笔尾橡皮在系统层面和笔尖无法区分，所以做成工具）
+  - 批注保存在本地，带批注的文章不会被自动清理
+- **生词本**：查过的单词和短语自动收录，附带音标、释义、原句和出处，点一下可回到原文。同时生成 `~/.local/share/rmnews/vocab.tsv`，可直接导入 Anki
 - **为 Gallery 3 彩色墨水屏优化**
   - 整页翻页，没有滚动和动画；点左侧往前翻、点右侧往后翻，也可以左右滑动
   - 正文纯黑、字重加粗一级；彩色只用于配图和来源标识
@@ -42,7 +49,9 @@ xovi 是临时挂载的，设备重启后需要重新运行 `/home/root/xovi/sta
 - `tools/mkrcc.py`：纯 Python 的 Qt `.rcc` 打包器，不需要安装 Qt。
 - `tools/build_dict.py`：把 ECDICT 的 CSV 切成按前缀加载的 JSON 分片。
 - 桌面调试：可以用 PySide6 6.10（与设备相同的 Qt 版本）加载 `app/ui/main.qml`，并给 `net.asivery.ApploadUtils` 提供一个替身模块。
-- 设备调试：在设备上创建 `/home/root/.local/share/rmnews/debug` 后，应用会每 1.5 秒读取同目录下的 `cmd.js` 并执行，结果写入 `out.txt`。**注意不要在应用里调用 `grabToImage`，会让 xochitl 崩溃。**
+- 桌面运行：`tools/desktop/run.py WORKDIR STEPS_JSON` 用 PySide6 6.10 加载应用并按脚本模拟操作（包括笔事件）和截图。
+- 设备调试：在设备上创建 `/home/root/.local/share/rmnews/debug` 后，应用会每 1.5 秒读取同目录下的 `cmd.js` 并执行，结果写入 `out.txt`；`tools/rmjs.sh` 封装了这个流程。**注意不要在应用里调用 `grabToImage`，会让 xochitl 崩溃。**
+- 输入：在 xochitl 里，Marker 的事件以非合成鼠标事件（`Qt.MouseEventNotSynthesized`，约 470 Hz）到达应用，手指则是触摸合成的鼠标事件，应用靠这一点区分两者。
 
 ## English
 
@@ -53,6 +62,8 @@ rmnews is an [AppLoad](https://github.com/asivery/rm-appload) app for the reMark
 - **Pictures**: shown in color.
 - **Long-press lookup** in English articles: offline ECDICT dictionary for single words; online translation for phrases and sentences.
 - **Bilingual view**: paragraph-by-paragraph Chinese translation.
+- **Marker support**: underline or circle words to translate; highlighter, pen and eraser tools; annotations are anchored to paragraphs and saved locally.
+- **Vocabulary list**: every lookup is kept with its sentence and source; exported as `vocab.tsv` for Anki.
 - **Tuned for the Gallery 3 color e-ink screen**: paging instead of scrolling, pure-black text, per-region refresh modes, periodic ghost removal.
 
 **Install**: install xovi + AppLoad (0.6.0+ for firmware 3.29), then run `./build.sh deploy` against an SSH host called `remarkable`.

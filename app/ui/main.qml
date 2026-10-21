@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Shapes
 import net.asivery.ApploadUtils
 import "News.js" as News
 
@@ -21,6 +22,18 @@ Rectangle {
     property string listStatus: ""
     property int fontPx: 42
     property bool bilingual: false
+
+    // Pen tools in articles. The Marker reaches us as plain (non-synthesized) mouse events,
+    // fingers as touch-synthesized ones, so the pen can write while fingers keep turning pages.
+    property string tool: "lookup"      // "lookup" | "highlight" | "pen" | "erase"
+    readonly property string activeTool: tool === "lookup" && !articleIsEnglish ? "highlight" : tool
+    property var notes: ({ hl: [], ink: [] })
+    readonly property color highlightColor: "#FFD600"
+    readonly property color inkColor: "#0D47A1"
+
+    property bool showVocab: false
+    property var vocabList: []
+    property int vocabPage: 0
 
     property bool syncing: false
     property string syncStatus: ""
@@ -48,6 +61,7 @@ Rectangle {
         if (typeof rmnewsDataDir !== "undefined") News.dataDir = rmnewsDataDir;
         if (typeof rmnewsDictBase !== "undefined") News.dictBase = rmnewsDictBase;
         News.get(News.dataDir + "debug", function (err) { debugEnabled = !err; });
+        News.loadVocab(function (v) { vocabList = v.slice(); });
         News.loadState(function (s) {
             if (stateLoaded) return;
             stateLoaded = true;
@@ -55,6 +69,7 @@ Rectangle {
             if (s.srcIndex) srcIndex = s.srcIndex;
             if (s.fontPx) fontPx = s.fontPx;
             if (s.bilingual !== undefined) bilingual = s.bilingual;
+            if (s.tool) tool = s.tool;
             showSource();
         });
     }
@@ -68,13 +83,14 @@ Rectangle {
     }
 
     function saveState() {
-        News.saveState({ lang: lang, srcIndex: srcIndex, fontPx: fontPx, bilingual: bilingual });
+        News.saveState({ lang: lang, srcIndex: srcIndex, fontPx: fontPx, bilingual: bilingual, tool: tool });
     }
 
     // ------------------------------------------------------------ e-paper
 
     // AppLoad turns DisplayMethodArea into xochitl's Epaper.ScreenModeItem. Its enum is
     // mapped by index onto [Pen, Mono, Animation, UI, Content], so use these names instead.
+    readonly property int modePen: 0        // lowest latency 1-bit; used while the Marker is down
     readonly property int modeMono: 1       // fast black & white; interactive feedback
     readonly property int modeUi: 3         // menus, buttons, popups
     readonly property int modeContent: 4    // full quality incl. color; what xochitl uses for documents
@@ -257,13 +273,18 @@ Rectangle {
     }
 
     function showArticle(item, art) {
-        article = { item: item, paras: art.paras, trans: art.trans || [], summaryOnly: art.summaryOnly,
-                    image: item.hasImage ? News.imageUrl(item.id) : "" };
-        articleStatus = "";
-        pageIdx = 0;
-        renderArticle();
-        clearGhosting();
-        if (bilingual && articleIsEnglish) translateAll();
+        var token = articleToken;
+        News.loadNotes(item.id, function (n) {
+            if (token !== articleToken) return;
+            notes = n;
+            article = { item: item, paras: art.paras, trans: art.trans || [], summaryOnly: art.summaryOnly,
+                        image: item.hasImage ? News.imageUrl(item.id) : "" };
+            articleStatus = "";
+            pageIdx = 0;
+            renderArticle();
+            clearGhosting();
+            if (bilingual && articleIsEnglish) translateAll();
+        });
     }
 
     function closeArticle() {
@@ -271,6 +292,8 @@ Rectangle {
         article = null;
         popup.hide();
         body.text = "";
+        notes = { hl: [], ink: [] };
+        inkPaths = [];
         clearGhosting();
     }
 
@@ -283,23 +306,42 @@ Rectangle {
         var small = "font-family:'Noto Sans SC'; font-weight:500; font-size:" + Math.round(fontPx * 0.68 * u) + "px;";
         var zhStyle = "font-family:'Noto Serif SC'; font-weight:500; font-size:" + Math.round(fontPx * 0.86 * u) +
                       "px; margin-left:" + Math.round(28 * u) + "px; line-height:135%;";
+        // Every <p>/<h1> becomes one text block; keys[] records what each block holds so
+        // highlights and ink can be anchored to "paragraph 7" instead of pixel positions.
+        var keys = [];
         var h = "<p style=\"font-family:'Noto Sans SC'; font-weight:700; font-size:" + Math.round(fontPx * 0.72 * u) +
                 "px; color:" + col + ";\">" + News.escapeHtml(a.item.source.toUpperCase()) + "</p>";
+        keys.push("b0");
         h += "<h1 style=\"font-family:'" + serifFamily + "'; font-weight:700; font-size:" +
-             Math.round(fontPx * 1.45 * u) + "px; line-height:115%;\">" + News.escapeHtml(a.item.title) + "</h1>";
-        if (a.item.time)
+             Math.round(fontPx * 1.45 * u) + "px; line-height:115%;\">" + markup(a.item.title, "b", 1) + "</h1>";
+        keys.push("b1");
+        if (a.item.time) {
             h += "<p style=\"" + small + "\">" + News.escapeHtml(News.timeAgo(a.item.time, lang)) + "</p>";
-        if (a.image)
+            keys.push("b2");
+        }
+        if (a.image) {
             h += "<p><img src=\"" + a.image + "\" width=\"" + Math.floor(bodyArea.width) + "\"></p>";
-        if (a.summaryOnly)
+            keys.push("b3");
+        }
+        if (a.summaryOnly) {
             h += "<p style=\"" + small + "\">（原网站未提供全文，以下为摘要）</p>";
+            keys.push("b4");
+        }
         for (var i = 0; i < a.paras.length; i++) {
-            h += "<p style=\"line-height:140%; font-weight:500;\">" + News.escapeHtml(a.paras[i]) + "</p>";
-            if (bilingual && a.trans[i])
-                h += "<p style=\"" + zhStyle + "\">" + News.escapeHtml(a.trans[i]) + "</p>";
+            h += "<p style=\"line-height:140%; font-weight:500;\">" + markup(a.paras[i], "p", i) + "</p>";
+            keys.push("p" + i);
+            if (bilingual && a.trans[i]) {
+                h += "<p style=\"" + zhStyle + "\">" + markup(a.trans[i], "t", i) + "</p>";
+                keys.push("t" + i);
+            }
         }
         var ratio = pageStarts.length > 1 ? pageStarts[pageIdx] / Math.max(1, body.contentHeight) : 0;
         body.text = h;
+        blockKeys = keys;
+        var plain = body.getText(0, body.length);
+        var starts = [0];
+        for (var c = 0; c < plain.length; c++) if (plain.charAt(c) === "\u2029") starts.push(c + 1);
+        blockStarts = starts;
         restoreRatio = ratio;
         Qt.callLater(computePages);
     }
@@ -343,6 +385,202 @@ Rectangle {
         renderArticle();
     }
 
+    // ------------------------------------------------------------ annotations
+
+    property var blockKeys: []      // per text block: "p3" paragraph 3, "t3" its translation, "b1" title, ...
+    property var blockStarts: []    // document position where each block begins
+    property var inkPaths: []       // ink strokes resolved to document coordinates: [{ src, w, pts }]
+
+    function markup(text, k, i) {
+        var rs = notes.hl.filter(function (x) { return x.k === k && x.i === i; })
+                         .sort(function (x, y) { return x.s - y.s; });
+        var out = "", at = 0;
+        rs.forEach(function (x) {
+            var s = Math.max(at, x.s), e = Math.min(text.length, x.e);
+            if (e <= s) return;
+            out += News.escapeHtml(text.slice(at, s)) + "<span style=\"background-color:" + highlightColor + ";\">" +
+                   News.escapeHtml(text.slice(s, e)) + "</span>";
+            at = e;
+        });
+        return out + News.escapeHtml(text.slice(at));
+    }
+
+    function blockAt(pos) {
+        var b = 0;
+        while (b + 1 < blockStarts.length && blockStarts[b + 1] <= pos) b++;
+        return b;
+    }
+
+    function blockTop(k, i) {
+        var b = blockKeys.indexOf(k + i);
+        return b < 0 ? null : body.positionToRectangle(blockStarts[b]).y;
+    }
+
+    function setNotes(n) {
+        notes = n;
+        if (article) News.saveNotes(article.item.id, n);
+    }
+
+    function layoutInk() {
+        var out = [];
+        notes.ink.forEach(function (st, idx) {
+            var top = blockTop(st.k, st.i);
+            if (top === null) return;   // e.g. drawn on a translation that is hidden now
+            out.push({ src: idx, w: st.w, pts: st.pts.map(function (p) { return Qt.point(p[0], top + p[1]); }) });
+        });
+        inkPaths = out;
+    }
+
+    // Text range a pen stroke points at: an underline (or strike-through) marks the words
+    // on that line, a loop marks the words inside it. null when the stroke misses the text.
+    function strokeRange(pts) {
+        var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+        pts.forEach(function (p) {
+            minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+            minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+        });
+        var lineH = fontPx * u * 1.4;
+        var loop = maxY - minY > 0.8 * lineH;
+        var ys = pts.map(function (p) { return p.y; }).sort(function (a, b) { return a - b; });
+        var yC = loop ? (minY + maxY) / 2 : ys[Math.floor(ys.length / 2)];
+        var midX = (minX + maxX) / 2;
+        var r = body.positionToRectangle(body.positionAt(midX, yC));
+        var yLine;
+        if (yC >= r.y + 0.2 * r.height && yC <= r.y + r.height) {
+            yLine = r.y + r.height / 2;     // through the words, or touching their bottoms
+        } else {
+            // In the leading between two lines: an underline belongs to the line above.
+            var r2 = body.positionToRectangle(body.positionAt(midX, yC - 0.5 * lineH));
+            yLine = r2.y + r2.height / 2;
+        }
+        var pad = loop ? 0.15 * lineH : 0;
+        var a = body.positionAt(minX + pad, yLine), b = body.positionAt(maxX - pad, yLine);
+        if (b <= a) return null;
+        // Snap to whole words; a word the stroke only grazes (less than half covered) is left out.
+        var wa = wordAt(a), wb = wordAt(Math.max(a, b - 1));
+        if (wa && wa.start < a) a = (a - wa.start) > (wa.end - a) ? wa.end : wa.start;
+        if (wb && wb.end > b) b = (wb.end - b) > (b - wb.start) ? wb.start : wb.end;
+        var t = body.getText(a, b);
+        while (a < b && /[\s\u2029]/.test(t.charAt(0))) { a++; t = t.slice(1); }
+        while (b > a && /[\s\u2029]/.test(t.charAt(t.length - 1))) { b--; t = t.slice(0, -1); }
+        return b > a ? { start: a, end: b } : null;
+    }
+
+    function mergeHighlights(list) {
+        var groups = {};
+        list.forEach(function (x) { (groups[x.k + x.i] = groups[x.k + x.i] || []).push(x); });
+        var out = [];
+        Object.keys(groups).forEach(function (key) {
+            var g = groups[key].sort(function (x, y) { return x.s - y.s; });
+            var cur = Object.assign({}, g[0]);
+            for (var j = 1; j < g.length; j++) {
+                if (g[j].s <= cur.e) cur.e = Math.max(cur.e, g[j].e);
+                else { out.push(cur); cur = Object.assign({}, g[j]); }
+            }
+            out.push(cur);
+        });
+        return out;
+    }
+
+    function addHighlight(rg) {
+        var hl = notes.hl.slice();
+        for (var b = blockAt(rg.start); b <= blockAt(rg.end - 1); b++) {
+            var start = blockStarts[b];
+            var end = b + 1 < blockStarts.length ? blockStarts[b + 1] - 1 : body.length;
+            var s = Math.max(rg.start, start) - start, e = Math.min(rg.end, end) - start;
+            if (e > s) hl.push({ k: blockKeys[b].charAt(0), i: +blockKeys[b].slice(1), s: s, e: e });
+        }
+        setNotes({ hl: mergeHighlights(hl), ink: notes.ink });
+        renderArticle();
+    }
+
+    function addInk(pts) {
+        var b = blockAt(body.positionAt(pts[0].x, pts[0].y));
+        var top = body.positionToRectangle(blockStarts[b]).y;
+        var stroke = { k: blockKeys[b].charAt(0), i: +blockKeys[b].slice(1), w: 4,
+                       pts: pts.map(function (p) { return [Math.round(p.x), Math.round(p.y - top)]; }) };
+        setNotes({ hl: notes.hl, ink: notes.ink.concat([stroke]) });
+        layoutInk();
+    }
+
+    // Remove ink strokes and highlights the eraser stroke passes over.
+    function eraseAlong(pts) {
+        var R = 30 * u;
+        var step = Math.max(1, Math.floor(pts.length / 80));
+        var gone = {};
+        inkPaths.forEach(function (path) {
+            for (var j = 0; j < path.pts.length && !gone[path.src]; j += 2) {
+                for (var k = 0; k < pts.length; k += step) {
+                    var dx = path.pts[j].x - pts[k].x, dy = path.pts[j].y - pts[k].y;
+                    if (dx * dx + dy * dy < R * R) { gone[path.src] = true; break; }
+                }
+            }
+        });
+        var hits = [];
+        for (var k = 0; k < pts.length; k += step) {
+            var p = body.positionAt(pts[k].x, pts[k].y);
+            var r = body.positionToRectangle(p);
+            if (pts[k].y < r.y - R || pts[k].y > r.y + r.height + R) continue;
+            var b = blockAt(p);
+            hits.push({ key: blockKeys[b], off: p - blockStarts[b] });
+        }
+        var hl = notes.hl.filter(function (x) {
+            return !hits.some(function (h) { return h.key === x.k + x.i && h.off >= x.s - 1 && h.off <= x.e + 1; });
+        });
+        var ink = notes.ink.filter(function (st, idx) { return !gone[idx]; });
+        var hlChanged = hl.length !== notes.hl.length;
+        setNotes({ hl: hl, ink: ink });
+        if (hlChanged) renderArticle(); else layoutInk();
+    }
+
+    function penStroke(pts) {
+        if (!article || !body.text) return;
+        switch (activeTool) {
+        case "lookup":
+            var rg = strokeRange(pts);
+            if (!rg) return;
+            body.select(rg.start, rg.end);
+            popup.show(body.getText(rg.start, rg.end), sentenceAround(rg.start, rg.end),
+                       body.positionToRectangle(rg.start).y - (pageStarts[pageIdx] || 0));
+            break;
+        case "highlight":
+            var hr = strokeRange(pts);
+            if (hr) addHighlight(hr);
+            break;
+        case "pen":
+            addInk(pts);
+            break;
+        case "erase":
+            eraseAlong(pts);
+            break;
+        }
+    }
+
+    function setTool(t) {
+        tool = t;
+        saveState();
+    }
+
+    // ------------------------------------------------------------ vocabulary page
+
+    function openVocab() {
+        News.loadVocab(function (v) { vocabList = v.slice(); vocabPage = 0; showVocab = true; });
+    }
+
+    function closeVocab() {
+        showVocab = false;
+        clearGhosting();
+    }
+
+    function deleteVocab(word) {
+        News.removeVocab(word);
+        vocabList = News.vocab.slice();
+        vocabPage = Math.min(vocabPage, vocabPages - 1);
+    }
+
+    readonly property int vocabPerPage: Math.max(3, Math.floor(vocabArea.height / (330 * u)))
+    readonly property int vocabPages: Math.max(1, Math.ceil(vocabList.length / vocabPerPage))
+
     // ------------------------------------------------------------ pagination
 
     property var pageStarts: [0]
@@ -371,17 +609,21 @@ Rectangle {
             restoreRatio = 0;
         }
         pageIdx = Math.min(pageIdx, starts.length - 1);
+        layoutInk();
     }
 
     function turn(delta) {
         popup.hide();
-        var before = article ? pageIdx : listPage;
+        var cur = function () { return article ? pageIdx : showVocab ? vocabPage : listPage; };
+        var before = cur();
         if (article) {
             pageIdx = Math.max(0, Math.min(pageStarts.length - 1, pageIdx + delta));
+        } else if (showVocab) {
+            vocabPage = Math.max(0, Math.min(vocabPages - 1, vocabPage + delta));
         } else {
             listPage = Math.max(0, Math.min(listPages - 1, listPage + delta));
         }
-        if ((article ? pageIdx : listPage) !== before && ++turnsSinceClear >= ghostEvery)
+        if (cur() !== before && ++turnsSinceClear >= ghostEvery)
             Qt.callLater(clearGhosting);
     }
 
@@ -431,13 +673,13 @@ Rectangle {
     Item {
         id: header
         anchors { top: parent.top; left: parent.left; right: parent.right }
-        height: (root.article ? 130 : 210) * u
+        height: (root.article || root.showVocab ? 130 : 210) * u
 
         DisplayMethodArea { anchors.fill: parent; displayMethod: root.modeContent }
 
         // Front page: paper name + date on the left, controls on the right.
         Column {
-            visible: !root.article
+            visible: !root.article && !root.showVocab
             anchors { left: parent.left; leftMargin: 56 * u; verticalCenter: parent.verticalCenter; verticalCenterOffset: -4 * u }
             spacing: 6 * u
             Text {
@@ -455,38 +697,24 @@ Rectangle {
         }
 
         Row {
-            visible: !root.article
+            visible: !root.article && !root.showVocab
             anchors { right: parent.right; rightMargin: 28 * u; verticalCenter: parent.verticalCenter }
-            spacing: 26 * u
+            spacing: 22 * u
 
-            // EN | 中文 segmented switch
-            Rectangle {
+            Seg {
+                u: root.u
                 anchors.verticalCenter: parent.verticalCenter
-                width: 260 * root.u; height: 84 * root.u
-                radius: 14 * root.u
-                border.width: 3 * root.u
-                border.color: "black"
-                Row {
-                    anchors.fill: parent
-                    anchors.margins: 6 * root.u
-                    Repeater {
-                        model: [["en", "EN"], ["zh", "中文"]]
-                        Rectangle {
-                            width: parent.width / 2; height: parent.height
-                            radius: 9 * root.u
-                            color: root.lang === modelData[0] ? "black" : "white"
-                            Text {
-                                anchors.centerIn: parent
-                                text: modelData[1]
-                                color: root.lang === modelData[0] ? "white" : "black"
-                                font.pixelSize: 32 * root.u
-                                font.family: root.sansFamily
-                                font.weight: Font.DemiBold
-                            }
-                            MouseArea { anchors.fill: parent; onClicked: root.setLang(modelData[0]) }
-                        }
-                    }
-                }
+                segWidth: 124 * root.u
+                options: [["en", "EN"], ["zh", "中文"]]
+                value: root.lang
+                onPicked: (v) => root.setLang(v)
+            }
+
+            Btn {
+                u: root.u
+                anchors.verticalCenter: parent.verticalCenter
+                text: (root.lang === "zh" ? "生词本" : "Words") + (root.vocabList.length ? " " + root.vocabList.length : "")
+                onClicked: root.openVocab()
             }
 
             Btn {
@@ -504,26 +732,49 @@ Rectangle {
             }
         }
 
-        // Article: back on the left, reading controls on the right.
+        // Article / vocabulary: back on the left, controls on the right.
         IconButton {
-            visible: root.article !== null
+            visible: root.article !== null || root.showVocab
             u: root.u
             anchors { left: parent.left; leftMargin: 28 * u; verticalCenter: parent.verticalCenter }
             kind: "back"
             label: root.lang === "zh" ? "返回" : "Back"
-            onClicked: root.closeArticle()
+            onClicked: root.article ? root.closeArticle() : root.closeVocab()
+        }
+
+        Text {
+            visible: root.showVocab && !root.article
+            anchors.centerIn: parent
+            text: (root.lang === "zh" ? "生词本 · " + root.vocabList.length + " 个" : "Words · " + root.vocabList.length)
+            font.pixelSize: 44 * root.u
+            font.family: root.lang === "zh" ? "Noto Serif SC" : "EB Garamond"
+            font.weight: Font.Bold
         }
 
         Row {
             visible: root.article !== null
-            anchors { right: parent.right; rightMargin: 36 * u; verticalCenter: parent.verticalCenter }
-            spacing: 20 * u
+            anchors { right: parent.right; rightMargin: 28 * u; verticalCenter: parent.verticalCenter }
+            spacing: 16 * u
+
+            // What the Marker does on the page; fingers always turn pages.
+            Seg {
+                u: root.u
+                anchors.verticalCenter: parent.verticalCenter
+                segWidth: 112 * root.u
+                accent: root.accent
+                options: root.articleIsEnglish
+                         ? [["lookup", "查词"], ["highlight", "荧光"], ["pen", "钢笔"], ["erase", "橡皮"]]
+                         : [["highlight", "荧光"], ["pen", "钢笔"], ["erase", "橡皮"]]
+                value: root.activeTool
+                onPicked: (v) => root.setTool(v)
+            }
+
             Btn { u: root.u; text: "A−"; onClicked: root.setFont(-4) }
             Btn { u: root.u; text: "A+"; onClicked: root.setFont(4) }
             Btn {
                 u: root.u
                 visible: root.articleIsEnglish
-                text: "中英对照"
+                text: "对照"
                 checked: root.bilingual
                 accent: root.accent
                 onClicked: root.toggleBilingual()
@@ -538,7 +789,7 @@ Rectangle {
 
     Item {
         id: listView
-        visible: !root.article
+        visible: !root.article && !root.showVocab
         anchors { top: header.bottom; left: parent.left; right: parent.right; bottom: footer.top }
 
         DisplayMethodArea { anchors.fill: parent; displayMethod: root.modeContent }
@@ -701,10 +952,11 @@ Rectangle {
                 }
                 clip: true
 
-                // Full-quality color while reading; fast 1-bit while a word selection is dragged.
+                // Full quality (color) while reading, lowest-latency 1-bit while the Marker is
+                // down, fast black & white while a finger drags a word selection.
                 DisplayMethodArea {
                     anchors.fill: parent
-                    displayMethod: pager.holding ? root.modeMono : root.modeContent
+                    displayMethod: pager.penDown ? root.modePen : pager.holding ? root.modeMono : root.modeContent
                 }
 
                 TextEdit {
@@ -723,6 +975,44 @@ Rectangle {
                     font.family: root.serifFamily
                     onContentHeightChanged: Qt.callLater(root.computePages)
                 }
+
+                // Handwritten ink, plus the stroke currently being drawn; scrolls with the text.
+                Item {
+                    id: inkLayer
+                    y: body.y
+                    width: parent.width
+                    height: body.contentHeight
+
+                    Repeater {
+                        model: root.inkPaths
+                        Shape {
+                            anchors.fill: parent
+                            ShapePath {
+                                strokeColor: root.inkColor
+                                strokeWidth: modelData.w * root.u
+                                fillColor: "transparent"
+                                capStyle: ShapePath.RoundCap
+                                joinStyle: ShapePath.RoundJoin
+                                PathPolyline { path: modelData.pts }
+                            }
+                        }
+                    }
+
+                    Shape {
+                        anchors.fill: parent
+                        visible: pager.livePts.length > 1
+                        ShapePath {
+                            strokeColor: root.activeTool === "highlight" ? "#88FFD600"
+                                         : root.activeTool === "erase" ? "#80000000"
+                                         : root.activeTool === "pen" ? root.inkColor : "black"
+                            strokeWidth: (root.activeTool === "highlight" ? 30 : root.activeTool === "erase" ? 36 : 4) * root.u
+                            fillColor: "transparent"
+                            capStyle: ShapePath.RoundCap
+                            joinStyle: ShapePath.RoundJoin
+                            PathPolyline { path: pager.livePts }
+                        }
+                    }
+                }
             }
 
             Text {
@@ -739,23 +1029,46 @@ Rectangle {
                 pressAndHoldInterval: 450
                 property real px: 0
                 property real py: 0
-                property bool holding: false
+                property bool holding: false    // long-press word selection in progress
                 property bool held: false
+                property bool penDown: false    // the Marker is on the glass
+                property real penTravel: 0
+                property var stroke: []         // document coordinates; copied into livePts by a timer
+                property var livePts: []
                 property int anchorA: -1
                 property int anchorB: -1
 
+                function docY(my) { return my + (root.pageStarts[root.pageIdx] || 0); }
+
                 // Text position under the finger, or -1 when it's in a gap between lines.
                 function posAt(mx, my) {
-                    var y = my + (root.pageStarts[root.pageIdx] || 0);
+                    var y = docY(my);
                     var p = body.positionAt(mx, y);
                     var r = body.positionToRectangle(p);
                     return (y < r.y - 6 * root.u || y > r.y + r.height + 6 * root.u) ? -1 : p;
                 }
 
-                onPressed: (mouse) => { px = mouse.x; py = mouse.y; holding = false; held = false; }
+                // ~470 Hz pen samples would rebuild the path far too often; redraw at ~16 Hz.
+                Timer {
+                    interval: 60
+                    repeat: true
+                    running: pager.penDown
+                    onTriggered: pager.livePts = pager.stroke.map(function (p) { return Qt.point(p.x, p.y); })
+                }
+
+                onPressed: (mouse) => {
+                    px = mouse.x; py = mouse.y; holding = false; held = false;
+                    penDown = mouse.source === Qt.MouseEventNotSynthesized;
+                    if (penDown) {
+                        stroke = [{ x: mouse.x, y: docY(mouse.y) }];
+                        penTravel = 0;
+                        livePts = [];
+                    }
+                }
 
                 onPressAndHold: (mouse) => {
                     held = true;
+                    if (penDown && (root.activeTool !== "lookup" || penTravel > 12 * root.u)) return;
                     if (!root.articleIsEnglish) return;
                     var p = posAt(mouse.x, mouse.y);
                     var w = p < 0 ? null : root.wordAt(p);
@@ -767,18 +1080,37 @@ Rectangle {
                 }
 
                 onPositionChanged: (mouse) => {
-                    if (!holding) return;
-                    var p = posAt(mouse.x, mouse.y);
-                    var w = p < 0 ? null : root.wordAt(p);
-                    if (!w) return;
-                    body.select(Math.min(anchorA, w.start), Math.max(anchorB, w.end));
+                    if (holding) {
+                        var p = posAt(mouse.x, mouse.y);
+                        var w = p < 0 ? null : root.wordAt(p);
+                        if (w) body.select(Math.min(anchorA, w.start), Math.max(anchorB, w.end));
+                        return;
+                    }
+                    if (!penDown) return;
+                    var last = stroke[stroke.length - 1];
+                    var x = mouse.x, y = docY(mouse.y);
+                    var d = Math.sqrt((x - last.x) * (x - last.x) + (y - last.y) * (y - last.y));
+                    if (d >= 3 * root.u) {
+                        stroke.push({ x: x, y: y });
+                        penTravel += d;
+                    }
                 }
 
+                onCanceled: { penDown = false; livePts = []; }
+
                 onReleased: (mouse) => {
+                    var wasPen = penDown;
+                    penDown = false;
+                    livePts = [];
                     if (holding) {
                         holding = false;
                         var a = body.selectionStart, b = body.selectionEnd;
                         popup.show(body.getText(a, b), root.sentenceAround(a, b), body.positionToRectangle(a).y - (root.pageStarts[root.pageIdx] || 0));
+                        return;
+                    }
+                    if (wasPen && penTravel > 12 * root.u) {
+                        popup.hide();
+                        root.penStroke(stroke);
                         return;
                     }
                     if (held) return;   // long press on blank space: do nothing
@@ -789,6 +1121,131 @@ Rectangle {
                         popup.hide();
                     } else {
                         root.turn(mouse.x < width * 0.3 ? -1 : 1);
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ layout: vocabulary
+
+    Item {
+        id: vocabView
+        visible: root.showVocab && !root.article
+        anchors { top: header.bottom; left: parent.left; right: parent.right; bottom: footer.top }
+
+        DisplayMethodArea { anchors.fill: parent; displayMethod: root.modeContent }
+
+        Item {
+            id: vocabArea
+            anchors { fill: parent; leftMargin: 56 * u; rightMargin: 56 * u; topMargin: 16 * u }
+
+            Text {
+                anchors.centerIn: parent
+                width: parent.width - 80 * u
+                visible: root.vocabList.length === 0
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                text: root.lang === "zh"
+                      ? "还没有生词。\n在英文文章里用笔在单词下面划一道，或者用手指长按单词，查过的词会自动收进这里。"
+                      : "No words yet.\nUnderline a word with the Marker (or long-press it) in an English article."
+                font.pixelSize: 36 * u
+                font.family: root.sansFamily
+                lineHeight: 1.3
+            }
+
+            Column {
+                anchors.fill: parent
+                Repeater {
+                    model: root.vocabList.slice(root.vocabPage * root.vocabPerPage, (root.vocabPage + 1) * root.vocabPerPage)
+                    Item {
+                        width: parent.width
+                        height: vocabArea.height / root.vocabPerPage
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: if (modelData.article) root.openArticle(modelData.article)
+                        }
+
+                        Column {
+                            anchors { left: parent.left; right: del.left; rightMargin: 30 * root.u; verticalCenter: parent.verticalCenter }
+                            spacing: 8 * root.u
+                            Row {
+                                spacing: 22 * root.u
+                                Text {
+                                    text: modelData.word
+                                    font.pixelSize: 50 * root.u
+                                    font.family: "Noto Sans"
+                                    font.weight: Font.Bold
+                                }
+                                Text {
+                                    anchors.baseline: parent.children[0].baseline
+                                    text: modelData.phonetic ? "/" + modelData.phonetic + "/" : ""
+                                    font.pixelSize: 30 * root.u
+                                    font.family: "Noto Sans"
+                                }
+                            }
+                            Text {
+                                width: parent.width
+                                text: modelData.meaning || ""
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                                font.pixelSize: 32 * root.u
+                                font.family: "Noto Serif SC"
+                                font.weight: Font.Medium
+                            }
+                            Text {
+                                width: parent.width
+                                visible: text !== ""
+                                text: modelData.sentence || ""
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                                font.pixelSize: 30 * root.u
+                                font.family: "EB Garamond"
+                                font.weight: Font.Medium
+                                font.italic: true
+                            }
+                            Row {
+                                spacing: 14 * root.u
+                                Rectangle {
+                                    visible: !!modelData.article
+                                    width: srcTag.implicitWidth + 20 * root.u
+                                    height: srcTag.implicitHeight + 6 * root.u
+                                    radius: 6 * root.u
+                                    color: modelData.article ? root.sourceColor(modelData.article.source) : "black"
+                                    Text {
+                                        id: srcTag
+                                        anchors.centerIn: parent
+                                        text: modelData.article ? modelData.article.source : ""
+                                        color: "white"
+                                        font.pixelSize: 22 * root.u
+                                        font.family: root.sansFamily
+                                        font.weight: Font.Bold
+                                    }
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: News.timeAgo(modelData.added, root.lang) + (modelData.count > 1 ? (root.lang === "zh" ? " · 查过 " + modelData.count + " 次" : " · looked up " + modelData.count + "×") : "")
+                                    font.pixelSize: 24 * root.u
+                                    font.family: root.sansFamily
+                                    font.weight: Font.Medium
+                                }
+                            }
+                        }
+
+                        Btn {
+                            id: del
+                            u: root.u
+                            anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+                            fontPx: 28 * root.u
+                            implicitHeight: 72 * root.u
+                            text: root.lang === "zh" ? "删除" : "Delete"
+                            onClicked: root.deleteVocab(modelData.word)
+                        }
+
+                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 2 * root.u; color: "black" }
                     }
                 }
             }
@@ -808,7 +1265,7 @@ Rectangle {
             u: root.u
             anchors { left: parent.left; leftMargin: 36 * u; verticalCenter: parent.verticalCenter }
             text: root.lang === "zh" ? "‹ 上一页" : "‹ Prev"
-            dim: root.article ? root.pageIdx === 0 : root.listPage === 0
+            dim: root.article ? root.pageIdx === 0 : root.showVocab ? root.vocabPage === 0 : root.listPage === 0
             onClicked: root.turn(-1)
         }
         Text {
@@ -816,6 +1273,7 @@ Rectangle {
             text: root.article
                   ? (root.articleStatus !== "" && body.text !== "" ? root.articleStatus + "    " : "") +
                     (root.pageIdx + 1) + " / " + root.pageStarts.length
+                  : root.showVocab ? (root.vocabPage + 1) + " / " + root.vocabPages
                   : (root.listPage + 1) + " / " + root.listPages
             font.pixelSize: 32 * u
             font.family: root.sansFamily
@@ -825,7 +1283,8 @@ Rectangle {
             u: root.u
             anchors { right: parent.right; rightMargin: 36 * u; verticalCenter: parent.verticalCenter }
             text: root.lang === "zh" ? "下一页 ›" : "Next ›"
-            dim: root.article ? root.pageIdx >= root.pageStarts.length - 1 : root.listPage >= root.listPages - 1
+            dim: root.article ? root.pageIdx >= root.pageStarts.length - 1
+                 : root.showVocab ? root.vocabPage >= root.vocabPages - 1 : root.listPage >= root.listPages - 1
             onClicked: root.turn(1)
         }
     }
@@ -851,6 +1310,7 @@ Rectangle {
         property string sentenceZh: ""
         property bool busy: false
         property int token: 0
+        property bool saved: false
         property real selTop: 0
         // Sit in the half of the screen away from the selection.
         y: selTop > root.height / 2 ? header.height + 30 * u : root.height - footer.height - height - 30 * u
@@ -865,6 +1325,7 @@ Rectangle {
             entry = null;
             online = "";
             sentenceZh = "";
+            saved = false;
             busy = true;
             selTop = header.height + bodyArea.anchors.topMargin + selY;
             visible = true;
@@ -874,19 +1335,51 @@ Rectangle {
                     if (t !== popup.token) return;
                     popup.online = out || ("翻译失败：" + err);
                     popup.busy = false;
+                    if (out) popup.remember();
                 });
                 return;
             }
             News.lookup(text, function (e) {
                 if (t !== popup.token) return;
                 popup.entry = e;
-                if (e && (e.translation || e.base)) { popup.busy = false; return; }
+                if (e && (e.translation || e.base)) { popup.busy = false; popup.remember(); return; }
                 News.lookupOnline(text, function (err, out) {
                     if (t !== popup.token) return;
                     popup.online = out || "未找到释义";
                     popup.busy = false;
+                    if (out) popup.remember();
                 });
             });
+        }
+
+        // Every lookup goes into the vocabulary list (with its sentence and article).
+        function remember() {
+            var e = entry;
+            var word = isPhrase ? query : (e && e.translation ? e.word : query);
+            var meaning = e && e.translation ? e.translation : online;
+            if (e && e.base && e.base.translation)
+                meaning = (meaning ? meaning + "\n" : "") + "原形 " + e.base.word + "：" + e.base.translation.split("\n")[0];
+            var it = root.article ? root.article.item : null;
+            News.addVocab({
+                word: word,
+                phonetic: !isPhrase && e ? (e.phonetic || (e.base ? e.base.phonetic : "")) : "",
+                meaning: meaning,
+                sentence: sentence,
+                article: it ? { id: it.id, title: it.title, source: it.source, link: it.link, time: it.time,
+                                hasImage: it.hasImage, cached: it.cached } : null
+            });
+            root.vocabList = News.vocab.slice();
+            saved = true;
+        }
+
+        function toggleSaved() {
+            if (saved) {
+                News.removeVocab(isPhrase ? query : (entry && entry.translation ? entry.word : query));
+                root.vocabList = News.vocab.slice();
+                saved = false;
+            } else {
+                remember();
+            }
         }
 
         function hide() {
@@ -1014,6 +1507,14 @@ Rectangle {
                     visible: popup.sentence !== "" && popup.sentenceZh === ""
                     text: "翻译整句"
                     onClicked: popup.translateSentence()
+                }
+                Btn {
+                    u: root.u
+                    visible: !popup.busy
+                    text: popup.saved ? "★ 生词本" : "☆ 生词本"
+                    checked: popup.saved
+                    accent: root.accent
+                    onClicked: popup.toggleSaved()
                 }
                 Btn { u: root.u; text: "关闭"; onClicked: popup.hide() }
             }
