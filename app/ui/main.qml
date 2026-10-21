@@ -1,5 +1,4 @@
 import QtQuick 2.15
-import QtQuick.Shapes
 import net.asivery.ApploadUtils
 import "News.js" as News
 
@@ -985,31 +984,32 @@ Rectangle {
 
                     Repeater {
                         model: root.inkPaths
-                        Shape {
+                        InkStroke {
                             anchors.fill: parent
-                            ShapePath {
-                                strokeColor: root.inkColor
-                                strokeWidth: modelData.w * root.u
-                                fillColor: "transparent"
-                                capStyle: ShapePath.RoundCap
-                                joinStyle: ShapePath.RoundJoin
-                                PathPolyline { path: modelData.pts }
-                            }
+                            pts: modelData.pts
+                            color: root.inkColor
+                            lineWidth: modelData.w * root.u
                         }
                     }
 
-                    Shape {
-                        anchors.fill: parent
-                        visible: pager.livePts.length > 1
-                        ShapePath {
-                            strokeColor: root.activeTool === "highlight" ? "#88FFD600"
-                                         : root.activeTool === "erase" ? "#80000000"
-                                         : root.activeTool === "pen" ? root.inkColor : "black"
-                            strokeWidth: (root.activeTool === "highlight" ? 30 : root.activeTool === "erase" ? 36 : 4) * root.u
-                            fillColor: "transparent"
-                            capStyle: ShapePath.RoundCap
-                            joinStyle: ShapePath.RoundJoin
-                            PathPolyline { path: pager.livePts }
+                    // The stroke being drawn, one segment appended per pen sample.
+                    Repeater {
+                        model: liveSegs
+                        Rectangle {
+                            readonly property real lw: (root.activeTool === "highlight" ? 30 : root.activeTool === "erase" ? 36 : 4) * root.u
+                            readonly property real dx: x1 - x0
+                            readonly property real dy: y1 - y0
+                            x: x0 - lw / 2
+                            y: y0 - lw / 2
+                            width: Math.sqrt(dx * dx + dy * dy) + lw
+                            height: lw
+                            radius: lw / 2
+                            antialiasing: true
+                            color: root.activeTool === "highlight" ? "#FFD600"
+                                   : root.activeTool === "erase" ? "#9E9E9E"
+                                   : root.activeTool === "pen" ? root.inkColor : "black"
+                            opacity: root.activeTool === "highlight" ? 0.5 : 1
+                            transform: Rotation { origin.x: lw / 2; origin.y: lw / 2; angle: Math.atan2(dy, dx) * 180 / Math.PI }
                         }
                     }
                 }
@@ -1033,8 +1033,7 @@ Rectangle {
                 property bool held: false
                 property bool penDown: false    // the Marker is on the glass
                 property real penTravel: 0
-                property var stroke: []         // document coordinates; copied into livePts by a timer
-                property var livePts: []
+                property var stroke: []         // document coordinates of the current pen stroke
                 property int anchorA: -1
                 property int anchorB: -1
 
@@ -1048,13 +1047,7 @@ Rectangle {
                     return (y < r.y - 6 * root.u || y > r.y + r.height + 6 * root.u) ? -1 : p;
                 }
 
-                // ~470 Hz pen samples would rebuild the path far too often; redraw at ~16 Hz.
-                Timer {
-                    interval: 60
-                    repeat: true
-                    running: pager.penDown
-                    onTriggered: pager.livePts = pager.stroke.map(function (p) { return Qt.point(p.x, p.y); })
-                }
+                ListModel { id: liveSegs }
 
                 onPressed: (mouse) => {
                     px = mouse.x; py = mouse.y; holding = false; held = false;
@@ -1062,7 +1055,7 @@ Rectangle {
                     if (penDown) {
                         stroke = [{ x: mouse.x, y: docY(mouse.y) }];
                         penTravel = 0;
-                        livePts = [];
+                        liveSegs.clear();
                     }
                 }
 
@@ -1093,15 +1086,16 @@ Rectangle {
                     if (d >= 3 * root.u) {
                         stroke.push({ x: x, y: y });
                         penTravel += d;
+                        liveSegs.append({ x0: last.x, y0: last.y, x1: x, y1: y });
                     }
                 }
 
-                onCanceled: { penDown = false; livePts = []; }
+                onCanceled: { penDown = false; liveSegs.clear(); }
 
                 onReleased: (mouse) => {
                     var wasPen = penDown;
                     penDown = false;
-                    livePts = [];
+                    liveSegs.clear();
                     if (holding) {
                         holding = false;
                         var a = body.selectionStart, b = body.selectionEnd;
