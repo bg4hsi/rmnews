@@ -318,6 +318,7 @@ Rectangle {
         }
         clearSegs("highlight");
         inkSession = false;
+        writeBox = Qt.rect(0, 0, 0, 0);
         var a = article;
         // Text stays pure black (Gallery 3 dithers greys into speckles); color is used for
         // accents and pictures only.
@@ -416,6 +417,20 @@ Rectangle {
     // highlights into the text when the page is repainted anyway (turn, close, font, bilingual).
     property bool inkSession: false
     property var pendingHl: []
+
+    // Animation mode is black & white, so it only covers where the pen has been on this page
+    // (document coordinates, padded); the rest of the page, pictures included, stays in color.
+    property rect writeBox: Qt.rect(0, 0, 0, 0)
+    function growWriteBox(x, y) {
+        var pad = 140 * u;
+        var b = writeBox;
+        var x0 = x - pad, y0 = y - pad, x1 = x + pad, y1 = y + pad;
+        if (b.width > 0) {
+            x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+            x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
+        }
+        writeBox = Qt.rect(x0, y0, x1 - x0, y1 - y0);
+    }
 
     // Palm rejection. Touches (palm or finger) are ignored on the page while the Marker is
     // down, hovering, or was used within the last 1.5 s. With a writing tool selected a touch
@@ -674,6 +689,7 @@ Rectangle {
             flushHighlights();
             restoreRatio = 0;
             inkSession = false;
+            writeBox = Qt.rect(0, 0, 0, 0);
         }
         var cur = function () { return article ? pageIdx : showVocab ? vocabPage : listPage; };
         var before = cur();
@@ -1013,12 +1029,11 @@ Rectangle {
                 }
                 clip: true
 
-                // Full quality (color) while reading, Animation mode while writing, fast black &
-                // white while a word selection is dragged.
+                // Full quality (color) while reading, fast black & white while a word selection
+                // is dragged. Writing gets its own Animation-mode area below.
                 DisplayMethodArea {
                     anchors.fill: parent
-                    displayMethod: pager.penDown || root.inkSession ? root.modeAnimation
-                                   : pager.holding || touchArea.holding ? root.modeMono : root.modeContent
+                    displayMethod: pager.holding || touchArea.holding ? root.modeMono : root.modeContent
                 }
 
                 TextEdit {
@@ -1036,6 +1051,17 @@ Rectangle {
                     font.pixelSize: root.fontPx * root.u
                     font.family: root.serifFamily
                     onContentHeightChanged: Qt.callLater(root.computePages)
+                }
+
+                // Where the pen writes: Animation mode keeps ink live even with a palm on the glass
+                // (Pen mode stalls then), but it is monochrome, so it stays as small as possible.
+                DisplayMethodArea {
+                    visible: (pager.penDown || root.inkSession) && root.writeBox.width > 0
+                    x: root.writeBox.x
+                    y: root.writeBox.y - (root.pageStarts[root.pageIdx] || 0)
+                    width: root.writeBox.width
+                    height: root.writeBox.height
+                    displayMethod: root.modeAnimation
                 }
 
                 // Handwritten ink, plus the stroke currently being drawn; scrolls with the text.
@@ -1189,6 +1215,7 @@ Rectangle {
                     penDown = true;
                     stroke = [{ x: mouse.x, y: docY(mouse.y) }];
                     penTravel = 0;
+                    root.growWriteBox(mouse.x, docY(mouse.y));
                 }
 
                 onPressAndHold: (mouse) => {
@@ -1218,6 +1245,7 @@ Rectangle {
                     if (d >= 3 * root.u) {
                         stroke.push({ x: x, y: y });
                         penTravel += d;
+                        root.growWriteBox(x, y);
                         var t = root.activeTool;
                         freshSegs.append({ x0: last.x, y0: last.y, x1: x, y1: y, g: t,
                                            w: (t === "highlight" ? 30 : t === "erase" ? 36 : 4) * root.u,
