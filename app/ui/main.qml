@@ -89,8 +89,10 @@ Rectangle {
 
     // AppLoad turns DisplayMethodArea into xochitl's Epaper.ScreenModeItem. Its enum is
     // mapped by index onto [Pen, Mono, Animation, UI, Content], so use these names instead.
-    readonly property int modePen: 0        // lowest latency 1-bit; used while the Marker is down
     readonly property int modeMono: 1       // fast black & white; interactive feedback
+    // Used while writing. Pen mode is faster still, but xochitl stops refreshing Pen areas while
+    // a palm rests on the glass; Animation (what xochitl uses for scrolling) keeps up.
+    readonly property int modeAnimation: 2
     readonly property int modeUi: 3         // menus, buttons, popups
     readonly property int modeContent: 4    // full quality incl. color; what xochitl uses for documents
 
@@ -120,6 +122,14 @@ Rectangle {
 
     readonly property string dataDir: News.dataDir
     property bool debugEnabled: false
+
+    // Input trace for on-device debugging (read it with tools/rmjs.sh 'return root.trace.join("\\n")').
+    property var trace: []
+    function dlog(msg) {
+        if (!debugEnabled) return;
+        trace.push((Date.now() % 100000) + " " + msg);
+        if (trace.length > 300) trace.shift();
+    }
 
     Timer {
         interval: 1500
@@ -1003,11 +1013,11 @@ Rectangle {
                 }
                 clip: true
 
-                // Full quality (color) while reading, lowest-latency 1-bit while the Marker is
-                // down, fast black & white while a finger drags a word selection.
+                // Full quality (color) while reading, Animation mode while writing, fast black &
+                // white while a word selection is dragged.
                 DisplayMethodArea {
                     anchors.fill: parent
-                    displayMethod: pager.penDown || root.inkSession ? root.modePen
+                    displayMethod: pager.penDown || root.inkSession ? root.modeAnimation
                                    : pager.holding || touchArea.holding ? root.modeMono : root.modeContent
                 }
 
@@ -1089,6 +1099,7 @@ Rectangle {
                 property int anchorB: -1
 
                 onPressed: (mouse) => {
+                    root.dlog("touch press src=" + mouse.source + " " + Math.round(mouse.x) + "," + Math.round(mouse.y) + " penNear=" + root.penNear());
                     if (root.penNear()) {
                         mouse.accepted = false;     // palm while writing
                         return;
@@ -1117,7 +1128,10 @@ Rectangle {
                     if (w) body.select(Math.min(anchorA, w.start), Math.max(anchorB, w.end));
                 }
 
+                onCanceled: root.dlog("touch canceled")
+
                 onReleased: (mouse) => {
+                    root.dlog("touch release src=" + mouse.source);
                     root.lastTouchAt = Date.now();
                     if (holding) {
                         holding = false;
@@ -1165,6 +1179,7 @@ Rectangle {
                 }
 
                 onPressed: (mouse) => {
+                    root.dlog("pen-area press src=" + mouse.source + " btn=" + mouse.button + " " + Math.round(mouse.x) + "," + Math.round(mouse.y) + " touchPressed=" + touchArea.pressed);
                     if (mouse.source !== Qt.MouseEventNotSynthesized) {
                         mouse.accepted = false;     // touches go to touchArea below
                         return;
@@ -1212,9 +1227,10 @@ Rectangle {
                     }
                 }
 
-                onCanceled: { penDown = false; root.clearSegs(root.activeTool); }
+                onCanceled: { root.dlog("pen canceled"); penDown = false; root.clearSegs(root.activeTool); }
 
                 onReleased: (mouse) => {
+                    root.dlog("pen release travel=" + Math.round(penTravel) + " pts=" + stroke.length);
                     penDown = false;
                     root.notePen();
                     if (holding) {
@@ -1410,6 +1426,7 @@ Rectangle {
             // Qt Quick also emits hover moves while a finger drags; those are not the pen.
             if (mouse.source !== Qt.MouseEventNotSynthesized) return;
             if (touchArea.pressed || Date.now() - root.lastTouchAt < 500) return;
+            if (Date.now() - root.lastPenAt > 1000) root.dlog("pen hover " + Math.round(mouse.x) + "," + Math.round(mouse.y));
             root.notePen();
         }
     }
