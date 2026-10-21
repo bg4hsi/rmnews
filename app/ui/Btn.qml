@@ -7,6 +7,7 @@ Rectangle {
     property bool checked: false
     property bool dim: false
     property color accent: "black"      // fill when checked
+    property bool byPen: false          // whether the last press came from the Marker
     property real fontPx: 34 * u
     signal clicked
 
@@ -31,6 +32,7 @@ Rectangle {
     MouseArea {
         anchors.fill: parent
         anchors.margins: -8 * b.u
+        onPressed: (mouse) => { b.byPen = mouse.source === Qt.MouseEventNotSynthesized; }
         onClicked: if (!b.dim) b.clicked()
     }
 }

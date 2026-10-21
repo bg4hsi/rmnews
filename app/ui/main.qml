@@ -406,6 +406,14 @@ Rectangle {
     property bool inkSession: false
     property var pendingHl: []
 
+    // Palm rejection. Touches (palm or finger) are ignored on the page while the Marker is
+    // down, hovering, or was used within the last 1.5 s, and always while a writing tool is
+    // selected; footer buttons ignore touches while the pen is near.
+    property double lastPenAt: 0
+    readonly property bool writingTool: article !== null && activeTool !== "lookup"
+    function notePen() { lastPenAt = Date.now(); }
+    function penNear() { return pager.penDown || Date.now() - lastPenAt < 1500; }
+
     function clearSegs(kind) {
         for (var j = freshSegs.count - 1; j >= 0; j--)
             if (!kind || freshSegs.get(j).g === kind) freshSegs.remove(j);
@@ -1089,8 +1097,14 @@ Rectangle {
 
 
                 onPressed: (mouse) => {
+                    var isPen = mouse.source === Qt.MouseEventNotSynthesized;
+                    if (!isPen && (root.penNear() || root.writingTool)) {
+                        mouse.accepted = false;     // palm (or finger) while writing
+                        return;
+                    }
+                    if (isPen) root.notePen();
                     px = mouse.x; py = mouse.y; holding = false; held = false;
-                    penDown = mouse.source === Qt.MouseEventNotSynthesized;
+                    penDown = isPen;
                     if (penDown) {
                         stroke = [{ x: mouse.x, y: docY(mouse.y) }];
                         penTravel = 0;
@@ -1118,6 +1132,7 @@ Rectangle {
                         return;
                     }
                     if (!penDown) return;
+                    root.notePen();
                     var last = stroke[stroke.length - 1];
                     var x = mouse.x, y = docY(mouse.y);
                     var d = Math.sqrt((x - last.x) * (x - last.x) + (y - last.y) * (y - last.y));
@@ -1138,6 +1153,7 @@ Rectangle {
                 onReleased: (mouse) => {
                     var wasPen = penDown;
                     penDown = false;
+                    if (wasPen) root.notePen();
                     if (holding) {
                         holding = false;
                         var a = body.selectionStart, b = body.selectionEnd;
@@ -1303,7 +1319,7 @@ Rectangle {
             anchors { left: parent.left; leftMargin: 36 * u; verticalCenter: parent.verticalCenter }
             text: root.lang === "zh" ? "‹ 上一页" : "‹ Prev"
             dim: root.article ? root.pageIdx === 0 : root.showVocab ? root.vocabPage === 0 : root.listPage === 0
-            onClicked: root.turn(-1)
+            onClicked: if (byPen || !root.penNear()) root.turn(-1)
         }
         Text {
             anchors.centerIn: parent
@@ -1322,8 +1338,18 @@ Rectangle {
             text: root.lang === "zh" ? "下一页 ›" : "Next ›"
             dim: root.article ? root.pageIdx >= root.pageStarts.length - 1
                  : root.showVocab ? root.vocabPage >= root.vocabPages - 1 : root.listPage >= root.listPages - 1
-            onClicked: root.turn(1)
+            onClicked: if (byPen || !root.penNear()) root.turn(1)
         }
+    }
+
+    // The Marker reports a few hover moves as it approaches the glass: treat that as "pen near"
+    // so a palm landing first is already ignored. NoButton lets every press pass through.
+    MouseArea {
+        anchors.fill: parent
+        z: 100
+        acceptedButtons: Qt.NoButton
+        hoverEnabled: true
+        onPositionChanged: (mouse) => { if (mouse.source === Qt.MouseEventNotSynthesized) root.notePen(); }
     }
 
     // ------------------------------------------------------------ lookup popup

@@ -9,6 +9,7 @@ Usage: run.py WORKDIR STEPS_JSON
     press / move / release   at [x, y]: a real touch point (like a finger on the tablet), or with
                              "pen" as third item a non-synthesized mouse event, which is how
                              xochitl delivers the Marker
+    hover    a button-less pen move at [x, y] (the Marker approaching the glass)
 """
 import json
 import os
@@ -97,6 +98,10 @@ def run(i=0):
         print("SHOT", arg)
     elif kind in ("press", "move", "release"):
         mouse(kind, arg[0], arg[1], len(arg) > 2 and arg[2] == "pen")
+    elif kind == "hover":
+        pt = QPointF(arg[0], arg[1])
+        QCoreApplication.sendEvent(v, QMouseEvent(QEvent.MouseMove, pt, pt, QPointF(v.mapToGlobal(QPoint(int(arg[0]), int(arg[1])))),
+                                                  Qt.NoButton, Qt.NoButton, Qt.NoModifier, Qt.MouseEventNotSynthesized))
     QTimer.singleShot(wait, lambda: run(i + 1))
 
 
