@@ -11,15 +11,16 @@
   - 中文：BBC 中文（自动转简体）、德国之声、纽约时报中文网、爱范儿
 - **离线优先**：点「更新」把当前语言所有来源的列表、全文和配图一次下载到设备上，之后阅读不联网。第一次打开时自动下载。超过 14 天的缓存自动清理。
 - **长按翻译（英文文章）**
-  - 长按单词：离线英汉词典（[ECDICT](https://github.com/skywind3000/ECDICT)，约 11 万词），显示音标、释义、考试标签，变形词同时给出原形（went → go）
+  - 用笔或手指长按单词：离线英汉词典（[ECDICT](https://github.com/skywind3000/ECDICT)，约 11 万词），显示音标、释义、考试标签，变形词同时给出原形（went → go）
   - 长按后拖动：选中短语，在线翻译
   - 「翻译整句」：翻译所在句子
 - **中英对照**：英文文章逐段加中文译文，译文会缓存下来离线可看
-- **手写笔（Marker）**：笔负责书写，手指负责翻页，两者互不干扰。文章页顶栏可以切换工具：
-  - 查词：在单词或短语下面划一道（或圈起来）即可翻译
+- **手写笔（Marker）**：文章默认就是钢笔，顶栏可切换「荧光 / 钢笔 / 橡皮」
+  - 钢笔：黑色笔迹，跟随所在段落；书写时用快速刷新，手掌压在屏幕上也能实时显示
   - 荧光：划过的文字标黄，高亮锚定在文字上，调字号、开关对照都不会错位
-  - 钢笔：自由书写，笔迹跟随所在段落
   - 橡皮：擦掉划过的笔迹和高亮（笔尾橡皮在系统层面和笔尖无法区分，所以做成工具）
+  - 写字期间不做彩色刷新，翻页时统一刷新；配图在书写时保持彩色
+  - 防误触：笔在附近时忽略触摸；手指单击不翻页，翻页用滑动、笔点页面两侧或底部按钮
   - 批注保存在本地，带批注的文章不会被自动清理
 - **生词本**：查过的单词和短语自动收录，附带音标、释义、原句和出处，点一下可回到原文。同时生成 `~/.local/share/rmnews/vocab.tsv`，可直接导入 Anki
 - **为 Gallery 3 彩色墨水屏优化**
@@ -62,7 +63,7 @@ rmnews is an [AppLoad](https://github.com/asivery/rm-appload) app for the reMark
 - **Pictures**: shown in color.
 - **Long-press lookup** in English articles: offline ECDICT dictionary for single words; online translation for phrases and sentences.
 - **Bilingual view**: paragraph-by-paragraph Chinese translation.
-- **Marker support**: underline or circle words to translate; highlighter, pen and eraser tools; annotations are anchored to paragraphs and saved locally.
+- **Marker support**: pen (default), highlighter and eraser tools with palm rejection; long-press a word with the pen or a finger to translate; annotations are anchored to paragraphs and saved locally.
 - **Vocabulary list**: every lookup is kept with its sentence and source; exported as `vocab.tsv` for Anki.
 - **Tuned for the Gallery 3 color e-ink screen**: paging instead of scrolling, pure-black text, per-region refresh modes, periodic ghost removal.
 

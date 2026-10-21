@@ -24,8 +24,9 @@ Rectangle {
 
     // Pen tools in articles. The Marker reaches us as plain (non-synthesized) mouse events,
     // fingers as touch-synthesized ones, so the pen can write while fingers keep turning pages.
-    property string tool: "lookup"      // "lookup" | "highlight" | "pen" | "erase"
-    readonly property string activeTool: tool === "lookup" && !articleIsEnglish ? "highlight" : tool
+    // Words are looked up by long-pressing them (pen or finger), so there is no lookup tool.
+    property string tool: "pen"         // "highlight" | "pen" | "erase"
+    readonly property string activeTool: tool
     property var notes: ({ hl: [], ink: [] })
     readonly property color highlightColor: "#FFD600"
     // Ink is black: it is drawn in a monochrome refresh mode, so black is what it really looks
@@ -70,7 +71,7 @@ Rectangle {
             if (s.srcIndex) srcIndex = s.srcIndex;
             if (s.fontPx) fontPx = s.fontPx;
             if (s.bilingual !== undefined) bilingual = s.bilingual;
-            if (s.tool) tool = s.tool;
+            if (s.tool === "highlight" || s.tool === "erase") tool = s.tool;
             showSource();
         });
     }
@@ -254,7 +255,7 @@ Rectangle {
     function openArticle(item) {
         var token = ++articleToken;
         popup.hide();
-        tool = "lookup";        // articles open for reading; writing tools are picked explicitly
+        tool = "pen";           // articles open ready for the Marker
         article = { item: item, paras: [], trans: [], summaryOnly: false, image: "" };
         articleStatus = lang === "zh" ? "正在打开 …" : "Opening …";
         body.text = "";
@@ -460,7 +461,7 @@ Rectangle {
     // while the pen is near.
     property double lastPenAt: 0
     property double lastTouchAt: 0
-    readonly property bool writingTool: article !== null && activeTool !== "lookup"
+    readonly property bool writingTool: article !== null
     function notePen() { lastPenAt = Date.now(); }
     function penNear() { return pager.penDown || Date.now() - lastPenAt < 1500; }
 
@@ -625,15 +626,8 @@ Rectangle {
 
     function penStroke(pts) {
         if (!article || !body.text) return;
-        if (activeTool !== "lookup") inkSession = true;
+        inkSession = true;
         switch (activeTool) {
-        case "lookup":
-            var rg = strokeRange(pts);
-            if (!rg) { clearSegs("lookup"); return; }
-            body.select(rg.start, rg.end);
-            popup.show(body.getText(rg.start, rg.end), sentenceAround(rg.start, rg.end),
-                       body.positionToRectangle(rg.start).y - (pageStarts[pageIdx] || 0));
-            break;
         case "highlight":
             var hr = strokeRange(pts);
             if (hr) addHighlight(hr); else clearSegs("highlight");
@@ -861,9 +855,7 @@ Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
                 segWidth: 112 * root.u
                 accent: root.accent
-                options: root.articleIsEnglish
-                         ? [["lookup", "查词"], ["highlight", "荧光"], ["pen", "钢笔"], ["erase", "橡皮"]]
-                         : [["highlight", "荧光"], ["pen", "钢笔"], ["erase", "橡皮"]]
+                options: [["highlight", "荧光"], ["pen", "钢笔"], ["erase", "橡皮"]]
                 value: root.activeTool
                 onPicked: (v) => root.setTool(v)
             }
@@ -1161,7 +1153,7 @@ Rectangle {
 
                 onPressAndHold: (mouse) => {
                     held = true;
-                    if (swipeOnly || root.penNear() || !root.articleIsEnglish) return;
+                    if (root.penNear() || !root.articleIsEnglish) return;
                     var p = pager.posAt(mouse.x, mouse.y);
                     var w = p < 0 ? null : root.wordAt(p);
                     if (!w) return;
@@ -1207,14 +1199,20 @@ Rectangle {
             MouseArea {
                 id: pager
                 anchors.fill: parent
-                pressAndHoldInterval: 450
+                pressAndHoldInterval: 700       // hold the pen still on a word to look it up
                 property real px: 0
                 property real py: 0
-                property bool holding: false    // pen long-press word selection (lookup tool)
+                property bool holding: false    // pen long-press word selection
                 property bool held: false
                 property bool penDown: false    // the Marker is on the glass
                 property real penTravel: 0
                 property var stroke: []         // document coordinates of the current pen stroke
+                property int segStart: 0        // first freshSegs row of the current stroke
+
+                // Drop only what the current stroke drew (earlier strokes stay on screen).
+                function dropCurrentStroke() {
+                    if (freshSegs.count > segStart) freshSegs.remove(segStart, freshSegs.count - segStart);
+                }
                 property int anchorA: -1
                 property int anchorB: -1
 
@@ -1237,6 +1235,7 @@ Rectangle {
                     root.notePen();
                     px = mouse.x; py = mouse.y; holding = false; held = false;
                     penDown = true;
+                    segStart = freshSegs.count;
                     stroke = [{ x: mouse.x, y: docY(mouse.y) }];
                     penTravel = 0;
                     root.growWriteBox(mouse.x, docY(mouse.y));
@@ -1244,7 +1243,8 @@ Rectangle {
 
                 onPressAndHold: (mouse) => {
                     held = true;
-                    if (root.activeTool !== "lookup" || penTravel > 12 * root.u || !root.articleIsEnglish) return;
+                    if (penTravel > 12 * root.u || !root.articleIsEnglish) return;
+                    dropCurrentStroke();                // the dot the pen left while holding
                     var p = posAt(mouse.x, mouse.y);
                     var w = p < 0 ? null : root.wordAt(p);
                     if (!w) return;
@@ -1279,7 +1279,7 @@ Rectangle {
                     }
                 }
 
-                onCanceled: { root.dlog("pen canceled"); penDown = false; root.clearSegs(root.activeTool); }
+                onCanceled: { root.dlog("pen canceled"); penDown = false; dropCurrentStroke(); }
 
                 onReleased: (mouse) => {
                     root.dlog("pen release travel=" + Math.round(penTravel) + " pts=" + stroke.length);
@@ -1292,11 +1292,10 @@ Rectangle {
                         return;
                     }
                     if (penTravel > 12 * root.u) {
-                        if (root.activeTool === "lookup") popup.hide();
                         root.penStroke(stroke);
                         return;
                     }
-                    root.clearSegs(root.activeTool);    // a dot, not a stroke
+                    dropCurrentStroke();                // a dot, not a stroke
                     if (held) return;
                     if (popup.visible) popup.hide();
                     else root.turn(mouse.x < width * 0.3 ? -1 : 1);
@@ -1580,7 +1579,6 @@ Rectangle {
             token++;
             visible = false;
             body.deselect();
-            root.clearSegs("lookup");
         }
 
         function translateSentence() {
