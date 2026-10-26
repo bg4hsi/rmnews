@@ -1,5 +1,15 @@
 # rmnews — reMarkable Paper Pro 新闻阅读器
 
+[中文介绍](#中文介绍) | [English introduction](#english-introduction)
+
+## 中文介绍
+
+为 reMarkable Paper Pro 开发的 AppLoad 新闻阅读器，支持中英文新闻源、离线阅读和彩色配图。阅读英文时可长按查词、翻译短语或句子，并查看逐段中文译文；同时提供手写批注、荧光标记、生词本和 Anki 导出，针对 Gallery 3 彩色墨水屏优化翻页与刷新。
+
+## English introduction
+
+An AppLoad news reader for the reMarkable Paper Pro, with Chinese and English sources, offline reading, and color images. English reading tools include long-press dictionary lookup, phrase and sentence translation, and paragraph-by-paragraph Chinese translations. It also provides handwritten annotations, highlighting, a vocabulary notebook, and Anki export, with paging and refresh behavior tuned for the Gallery 3 color e-ink display.
+
 在 reMarkable Paper Pro 上看新闻的 [AppLoad](https://github.com/asivery/rm-appload) 应用：中英文新闻源、离线阅读、彩色配图，英文文章长按查词翻译。
 
 *A news reader for the reMarkable Paper Pro, built as an AppLoad app. English summary [below](#english).*
@@ -86,3 +96,5 @@ If you find this repository useful, you can optionally support its maintainer, *
 </p>
 
 使用支付宝扫一扫，或点击图片查看原图。感谢你的支持！
+
+Scan with Alipay, or click the image to view the original. Thank you for your support!
