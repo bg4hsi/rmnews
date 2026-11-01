@@ -36,23 +36,27 @@ An AppLoad news reader for the reMarkable Paper Pro, with Chinese and English so
 - **为 Gallery 3 彩色墨水屏优化**
   - 整页翻页，没有滚动和动画；点左侧往前翻、点右侧往后翻，也可以左右滑动
   - 正文纯黑、字重加粗一级；彩色只用于配图和来源标识
-  - 用 xochitl 自带的 Content / UI / Mono 刷新模式分区刷新，每翻几页调用系统接口清一次残影
+  - 用 xochitl 自带的刷新模式分区刷新：阅读用 Content（彩色），书写用 Animation，界面用 UI；每翻几页调用系统接口清一次残影
 
 ## 安装
 
-需要：reMarkable Paper Pro（已在固件 3.29.0.153 上测试），已开启开发者模式，并能 SSH 登录。
+**详细步骤（开发者模式、SSH、xovi/AppLoad、自动启动、固件更新后恢复、常见问题）见 [docs/INSTALL.md](docs/INSTALL.md)。**
 
-1. **安装 xovi 和 AppLoad**（AppLoad 0.6.0 起支持 3.29）。参考 [rm-xovi-extensions](https://github.com/asivery/rm-xovi-extensions) 和 [rm-appload](https://github.com/asivery/rm-appload) 的说明，或者用 [vellum](https://github.com/vellum-dev/vellum)：`vellum add xovi appload`。然后在设备上运行一次 `xovi/rebuild_hashtable`。
-2. **构建并部署**：在电脑上运行（需要 Python 3，并在 `~/.ssh/config` 里配置一个名为 `remarkable` 的主机，或者设置 `RM_HOST`）：
+需要：reMarkable Paper Pro（已在固件 3.29.0.153 和 3.29.1.0 上测试），已开启开发者模式，能 SSH 登录；电脑上有 Python 3。
+
+1. **安装 xovi 和 AppLoad**（AppLoad 0.6.0 起支持 3.29），然后在设备上运行一次 `xovi/rebuild_hashtable` 和 `xovi/start`。
+2. **构建并部署**：配置好名为 `remarkable` 的 SSH 主机（或设置 `RM_HOST`）后运行
 
    ```bash
    ./build.sh deploy
    ```
 
-   第一次运行会下载 ECDICT 并生成离线词典（约 11 MB）。脚本会把应用复制到 `/home/root/xovi/exthome/appload/rmnews/`，然后重启 xochitl。
+   第一次运行会下载 ECDICT 并生成离线词典（约 11 MB），然后把应用复制到 `/home/root/xovi/exthome/appload/rmnews/` 并重启 xochitl。
 3. 在侧边栏打开 AppLoad →「新闻 News」。
 
-xovi 是临时挂载的，设备重启后需要重新运行 `/home/root/xovi/start`。推荐安装 [xovi-tripletap](https://github.com/rmitchellscott/xovi-tripletap)，连按三下电源键即可启动。
+**重启后**：xovi 是临时挂载的，重启后运行 `/home/root/xovi/start`，或安装 [xovi-tripletap](https://github.com/rmitchellscott/xovi-tripletap) 后连按三下电源键。
+
+**固件更新后**：设备连着 USB 时运行 `tools/after-update.sh`，它会重建哈希表、重新启用 tripletap 并启动 xovi。
 
 ## 开发
 
@@ -61,6 +65,7 @@ xovi 是临时挂载的，设备重启后需要重新运行 `/home/root/xovi/sta
 - `tools/build_dict.py`：把 ECDICT 的 CSV 切成按前缀加载的 JSON 分片。
 - 桌面调试：可以用 PySide6 6.10（与设备相同的 Qt 版本）加载 `app/ui/main.qml`，并给 `net.asivery.ApploadUtils` 提供一个替身模块。
 - 桌面运行：`tools/desktop/run.py WORKDIR STEPS_JSON` 用 PySide6 6.10 加载应用并按脚本模拟操作（包括笔事件）和截图。
+- `tools/after-update.sh`：固件更新后一键恢复 xovi、AppLoad 和 tripletap。
 - 设备调试：在设备上创建 `/home/root/.local/share/rmnews/debug` 后，应用会每 1.5 秒读取同目录下的 `cmd.js` 并执行，结果写入 `out.txt`；`tools/rmjs.sh` 封装了这个流程。**注意不要在应用里调用 `grabToImage`，会让 xochitl 崩溃。**
 - 输入：在 xochitl 里，Marker 的事件以非合成鼠标事件（`Qt.MouseEventNotSynthesized`，约 470 Hz）到达应用，手指则是触摸合成的鼠标事件，应用靠这一点区分两者。
 
@@ -77,7 +82,7 @@ rmnews is an [AppLoad](https://github.com/asivery/rm-appload) app for the reMark
 - **Vocabulary list**: every lookup is kept with its sentence and source; exported as `vocab.tsv` for Anki.
 - **Tuned for the Gallery 3 color e-ink screen**: paging instead of scrolling, pure-black text, per-region refresh modes, periodic ghost removal.
 
-**Install**: install xovi + AppLoad (0.6.0+ for firmware 3.29), then run `./build.sh deploy` against an SSH host called `remarkable`.
+**Install**: install xovi + AppLoad (0.6.0+ for firmware 3.29), then run `./build.sh deploy` against an SSH host called `remarkable`. After a firmware update run `tools/after-update.sh`. Step-by-step guide (in Chinese): [docs/INSTALL.md](docs/INSTALL.md).
 
 ## 许可证 / License
 
