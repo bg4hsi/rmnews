@@ -44,6 +44,21 @@ function addCatalog(url, user, pass) {
     return c;
 }
 
+// Change a user catalog's address or login. A new address gets its name from the feed again.
+function updateCatalog(c, url, user, pass) {
+    url = url.trim();
+    if (!/^https?:\/\//i.test(url)) url = "http://" + url;
+    if (url !== c.url) {
+        c.name = url.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+        c.named = false;
+    }
+    c.url = url;
+    c.user = user || "";
+    c.pass = pass || "";
+    save();
+    return c;
+}
+
 function removeCatalog(c) {
     var i = state.catalogs.indexOf(c);
     if (i >= 0) { state.catalogs.splice(i, 1); save(); }

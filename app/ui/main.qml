@@ -821,6 +821,13 @@ Rectangle {
         keyboard.text = "";
     }
 
+    // Same steps as adding, with the catalog's current values filled in.
+    function opdsStartEdit(c) {
+        kbDraft = { edit: c };
+        kbMode = "url";
+        keyboard.text = c.url;
+    }
+
     function kbAccept(t) {
         var mode = kbMode;
         if (mode === "search") {
@@ -834,23 +841,24 @@ Rectangle {
             });
         } else if (mode === "url") {
             if (!t.trim()) { kbMode = ""; return; }
-            kbDraft = { url: t.trim() };
+            kbDraft = { edit: kbDraft.edit, url: t.trim() };
             kbMode = "user";
-            keyboard.text = "";
+            keyboard.text = kbDraft.edit ? kbDraft.edit.user || "" : "";
         } else if (mode === "user") {
-            kbDraft = { url: kbDraft.url, user: t.trim() };
+            kbDraft = { edit: kbDraft.edit, url: kbDraft.url, user: t.trim() };
             if (!t.trim()) return kbFinishAdd();
             kbMode = "pass";
-            keyboard.text = "";
+            keyboard.text = kbDraft.edit ? kbDraft.edit.pass || "" : "";
         } else if (mode === "pass") {
-            kbDraft = { url: kbDraft.url, user: kbDraft.user, pass: t };
+            kbDraft = { edit: kbDraft.edit, url: kbDraft.url, user: kbDraft.user, pass: t };
             kbFinishAdd();
         }
     }
 
     function kbFinishAdd() {
         kbMode = "";
-        var c = Opds.addCatalog(kbDraft.url, kbDraft.user, kbDraft.pass);
+        var c = kbDraft.edit ? Opds.updateCatalog(kbDraft.edit, kbDraft.url, kbDraft.user, kbDraft.pass)
+                             : Opds.addCatalog(kbDraft.url, kbDraft.user, kbDraft.pass);
         opdsCatalogList = Opds.catalogs();
         opdsOpen(c.url, c);
     }
@@ -1048,6 +1056,7 @@ Rectangle {
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
             text: root.kbMode === "search" ? root.tr("搜索", "Search")
+                  : root.kbMode !== "" && root.kbDraft.edit ? root.tr("修改书库", "Edit catalog")
                   : root.kbMode !== "" ? root.tr("添加书库", "Add a catalog")
                   : root.opdsDetail ? root.opdsDetail.title
                   : root.opdsFeed ? root.opdsFeed.title : root.tr("书库 · OPDS", "Books · OPDS")
@@ -1693,6 +1702,30 @@ Rectangle {
                 z: 2
             }
 
+            // An error over a list that is still shown (e.g. a catalog that would not open).
+            // Tap to dismiss.
+            Rectangle {
+                anchors.centerIn: parent
+                width: parent.width - 80 * u
+                height: errText.implicitHeight + 80 * u
+                visible: root.opdsStatus !== "" && root.opdsRows.length > 0 && !root.opdsBusy
+                color: "white"
+                border.width: 4 * u
+                border.color: "black"
+                radius: 14 * u
+                z: 3
+                Text {
+                    id: errText
+                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 40 * u }
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: root.opdsStatus + "\n\n" + root.tr("（点一下关闭）", "(tap to close)")
+                    font.pixelSize: 36 * u
+                    font.family: root.sansFamily
+                }
+                MouseArea { anchors.fill: parent; onClicked: { root.opdsStatus = ""; root.clearGhosting(); } }
+            }
+
             Column {
                 anchors.fill: parent
                 visible: !(root.opdsBusy && root.opdsStatus !== "")
@@ -1733,10 +1766,21 @@ Rectangle {
                             onClicked: root.opdsRemoveCatalog(modelData.catalog)
                         }
 
+                        Btn {
+                            id: editBtn
+                            visible: removeBtn.visible
+                            u: root.u
+                            anchors { right: removeBtn.left; rightMargin: 20 * root.u; verticalCenter: parent.verticalCenter }
+                            fontPx: 28 * root.u
+                            implicitHeight: 72 * root.u
+                            text: root.tr("修改", "Edit")
+                            onClicked: root.opdsStartEdit(modelData.catalog)
+                        }
+
                         Column {
                             anchors {
                                 left: parent.left
-                                right: cover.visible ? cover.left : removeBtn.visible ? removeBtn.left : parent.right
+                                right: cover.visible ? cover.left : editBtn.visible ? editBtn.left : parent.right
                                 rightMargin: 36 * root.u
                                 verticalCenter: parent.verticalCenter
                             }
