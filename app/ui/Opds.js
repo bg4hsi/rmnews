@@ -44,8 +44,20 @@ function addCatalog(url, user, pass) {
     return c;
 }
 
+// The stored catalog behind `c`. QML hands the UI copies (a Repeater's modelData, var
+// properties), so changes must go to the object in `state`, found by address and login.
+function stored(c) {
+    if (!c || c.builtin || !state) return null;
+    for (var i = 0; i < state.catalogs.length; i++) {
+        var s = state.catalogs[i];
+        if (s.url === c.url && (s.user || "") === (c.user || "")) return s;
+    }
+    return null;
+}
+
 // Change a user catalog's address or login. A new address gets its name from the feed again.
 function updateCatalog(c, url, user, pass) {
+    c = stored(c) || c;
     url = url.trim();
     if (!/^https?:\/\//i.test(url)) url = "http://" + url;
     if (url !== c.url) {
@@ -60,13 +72,14 @@ function updateCatalog(c, url, user, pass) {
 }
 
 function removeCatalog(c) {
-    var i = state.catalogs.indexOf(c);
+    var i = state.catalogs.indexOf(stored(c));
     if (i >= 0) { state.catalogs.splice(i, 1); save(); }
 }
 
 // Give a user catalog the title its feed announces, the first time it loads.
 function nameCatalog(c, title) {
-    if (!c || c.builtin || !title || c.named) return;
+    c = stored(c);
+    if (!c || !title || c.named) return;
     c.name = title;
     c.named = true;
     save();
