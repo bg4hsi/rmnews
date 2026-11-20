@@ -4,11 +4,11 @@
 
 ## 中文介绍
 
-为 reMarkable Paper Pro 开发的 AppLoad 新闻阅读器，支持中英文新闻源、离线阅读和彩色配图。阅读英文时可长按查词、翻译短语或句子，并查看逐段中文译文；同时提供手写批注、荧光标记、生词本和 Anki 导出，针对 Gallery 3 彩色墨水屏优化翻页与刷新。
+为 reMarkable Paper Pro 开发的 AppLoad 新闻阅读器，支持中英文新闻源、离线阅读和彩色配图。阅读英文时可长按查词、翻译短语或句子，并查看逐段中文译文；同时提供手写批注、荧光标记、生词本和 Anki 导出，还能从 OPDS 书库下载电子书到资料库，针对 Gallery 3 彩色墨水屏优化翻页与刷新。
 
 ## English introduction
 
-An AppLoad news reader for the reMarkable Paper Pro, with Chinese and English sources, offline reading, and color images. English reading tools include long-press dictionary lookup, phrase and sentence translation, and paragraph-by-paragraph Chinese translations. It also provides handwritten annotations, highlighting, a vocabulary notebook, and Anki export, with paging and refresh behavior tuned for the Gallery 3 color e-ink display.
+An AppLoad news reader for the reMarkable Paper Pro, with Chinese and English sources, offline reading, and color images. English reading tools include long-press dictionary lookup, phrase and sentence translation, and paragraph-by-paragraph Chinese translations. It also provides handwritten annotations, highlighting, a vocabulary notebook, Anki export, and an OPDS catalog browser that downloads e-books into the library, with paging and refresh behavior tuned for the Gallery 3 color e-ink display.
 
 在 reMarkable Paper Pro 上看新闻的 [AppLoad](https://github.com/asivery/rm-appload) 应用：中英文新闻源、离线阅读、彩色配图，英文文章长按查词翻译。
 
@@ -33,6 +33,11 @@ An AppLoad news reader for the reMarkable Paper Pro, with Chinese and English so
   - 防误触：笔在附近时忽略触摸；手指单击不翻页，翻页用滑动、笔点页面两侧或底部按钮
   - 批注保存在本地，带批注的文章不会被自动清理
 - **生词本**：查过的单词和短语自动收录，附带音标、释义、原句和出处，点一下可回到原文。同时生成 `~/.local/share/rmnews/vocab.tsv`，可直接导入 Anki
+- **书库（OPDS）**：首页「书库」按钮，浏览 OPDS 电子书目录（内置 Project Gutenberg、Unglue.it，可添加自己的 Calibre 书库，支持用户名密码）
+  - 支持分类浏览、搜索、加载下一页；内置屏幕键盘，用来输入搜索词和书库地址
+  - 下载的 EPUB / PDF 直接存进 reMarkable 资料库的「OPDS」文件夹，用系统阅读器打开、批注、同步
+  - xochitl 只在启动时读取资料库，新书要连按三下电源键（xovi-tripletap）或重启后才会出现
+  - 书库列表保存在 `~/.local/share/rmnews/opds.json`，密码以明文保存在设备上
 - **为 Gallery 3 彩色墨水屏优化**
   - 整页翻页，没有滚动和动画；点左侧往前翻、点右侧往后翻，也可以左右滑动
   - 正文纯黑、字重加粗一级；彩色只用于配图和来源标识
@@ -80,6 +85,7 @@ rmnews is an [AppLoad](https://github.com/asivery/rm-appload) app for the reMark
 - **Bilingual view**: paragraph-by-paragraph Chinese translation.
 - **Marker support**: pen (default), highlighter and eraser tools with palm rejection; long-press a word with the pen or a finger to translate; annotations are anchored to paragraphs and saved locally.
 - **Vocabulary list**: every lookup is kept with its sentence and source; exported as `vocab.tsv` for Anki.
+- **Books (OPDS)**: browse and search OPDS catalogs (Project Gutenberg, Unglue.it, or your own Calibre server, with basic auth) using a built-in on-screen keyboard. EPUB/PDF downloads go straight into an "OPDS" folder of the reMarkable library and open in the system reader; xochitl lists them after its next start (triple-tap the power button or restart).
 - **Tuned for the Gallery 3 color e-ink screen**: paging instead of scrolling, pure-black text, per-region refresh modes, periodic ghost removal.
 
 **Install**: install xovi + AppLoad (0.6.0+ for firmware 3.29), then run `./build.sh deploy` against an SSH host called `remarkable`. After a firmware update run `tools/after-update.sh`. Step-by-step guide (in Chinese): [docs/INSTALL.md](docs/INSTALL.md).

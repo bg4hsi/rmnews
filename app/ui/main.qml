@@ -1,6 +1,7 @@
 import QtQuick 2.15
 import net.asivery.ApploadUtils
 import "News.js" as News
+import "Opds.js" as Opds
 
 Rectangle {
     id: root
@@ -37,6 +38,23 @@ Rectangle {
     property var vocabList: []
     property int vocabPage: 0
 
+    // Book catalogs (OPDS). opdsFeed null means the list of catalogs itself.
+    property bool showOpds: false
+    property var opdsFeed: null
+    property var opdsCat: null
+    property var opdsStack: []          // where Back returns to: [{ feed, cat, page, search }]
+    property var opdsSearch: null       // the nearest feed with a search link, in this catalog
+    property int opdsPage: 0
+    property string opdsStatus: ""
+    property bool opdsBusy: false
+    property int opdsToken: 0
+    property var opdsCatalogList: []
+    property var opdsDetail: null       // the book whose page is open
+    property string opdsDetailStatus: ""
+    property bool opdsDownloading: false
+    property string kbMode: ""          // "" | "search" | "url" | "user" | "pass"
+    property var kbDraft: ({})
+
     property bool syncing: false
     property string syncStatus: ""
 
@@ -62,6 +80,7 @@ Rectangle {
         // The desktop test harness relocates data files via a context property.
         if (typeof rmnewsDataDir !== "undefined") News.dataDir = rmnewsDataDir;
         if (typeof rmnewsDictBase !== "undefined") News.dictBase = rmnewsDictBase;
+        if (typeof rmnewsDataDir !== "undefined") Opds.libraryDir = rmnewsDataDir + "library/";
         News.get(News.dataDir + "debug", function (err) { debugEnabled = !err; });
         News.loadVocab(function (v) { vocabList = v.slice(); });
         News.loadState(function (s) {
@@ -666,6 +685,180 @@ Rectangle {
     readonly property int vocabPerPage: Math.max(3, Math.floor(vocabArea.height / (330 * u)))
     readonly property int vocabPages: Math.max(1, Math.ceil(vocabList.length / vocabPerPage))
 
+    // ------------------------------------------------------------ book catalogs (OPDS)
+
+    function tr(zh, en) { return lang === "zh" ? zh : en; }
+
+    // Rows on screen: catalogs ({ catalog }) at the top level, feed entries below it.
+    readonly property var opdsRows: opdsFeed ? opdsFeed.entries
+                                             : opdsCatalogList.map(function (c) { return { catalog: c }; })
+    readonly property int opdsPerPage: Math.max(3, Math.floor(opdsArea.height / (290 * u)))
+    readonly property int opdsPages: Math.max(1, Math.ceil(opdsRows.length / opdsPerPage))
+    readonly property bool opdsHasMore: opdsFeed !== null && opdsFeed.next !== ""
+
+    function openOpds() {
+        Opds.load(function () {
+            opdsCatalogList = Opds.catalogs();
+            opdsStack = [];
+            opdsFeed = null;
+            opdsCat = null;
+            opdsSearch = null;
+            opdsPage = 0;
+            opdsStatus = "";
+            opdsDetail = null;
+            kbMode = "";
+            showOpds = true;
+        });
+    }
+
+    function closeOpds() {
+        opdsToken++;
+        showOpds = false;
+        opdsDetail = null;
+        kbMode = "";
+        opdsBusy = false;
+        clearGhosting();
+    }
+
+    function opdsError(err) {
+        if (err === "401") return tr("需要用户名和密码（或密码不对）", "Needs a user name and password (or they are wrong)");
+        if (err === "not an OPDS catalog") return tr("这个地址不是 OPDS 书库", "That address is not an OPDS catalog");
+        if (err === "not an EPUB or PDF file") return tr("下载到的不是 EPUB 或 PDF 文件", "The download is not an EPUB or PDF file");
+        return tr("打不开（离线？）", "Could not load (offline?)") + "  " + err;
+    }
+
+    // Load a feed and show it; the current view goes on the Back stack.
+    function opdsOpen(url, cat) {
+        var token = ++opdsToken;
+        opdsBusy = true;
+        opdsStatus = tr("正在打开 …", "Loading …");
+        Opds.openFeed(url, cat, function (err, feed) {
+            if (token !== opdsToken) return;
+            opdsBusy = false;
+            if (err) { opdsStatus = opdsError(err); return; }
+            if (!opdsFeed) Opds.nameCatalog(cat, feed.title);
+            opdsStack = opdsStack.concat([{ feed: opdsFeed, cat: opdsCat, page: opdsPage, search: opdsSearch }]);
+            if (cat !== opdsCat) opdsSearch = null;
+            opdsFeed = feed;
+            opdsCat = cat;
+            if (feed.search) opdsSearch = feed;
+            opdsPage = 0;
+            opdsStatus = feed.entries.length ? "" : tr("这里没有书", "Nothing here");
+            clearGhosting();
+        });
+    }
+
+    function opdsBack() {
+        if (kbMode !== "") { kbMode = ""; return; }
+        if (opdsDetail) { opdsDetail = null; clearGhosting(); return; }
+        opdsToken++;
+        opdsBusy = false;
+        if (!opdsStack.length) { closeOpds(); return; }
+        var s = opdsStack[opdsStack.length - 1];
+        opdsStack = opdsStack.slice(0, -1);
+        opdsFeed = s.feed;
+        opdsCat = s.cat;
+        opdsPage = s.page;
+        opdsSearch = s.search;
+        opdsStatus = "";
+        if (!opdsFeed) opdsCatalogList = Opds.catalogs();
+        clearGhosting();
+    }
+
+    function opdsTap(row) {
+        if (row.catalog) return opdsOpen(row.catalog.url, row.catalog);
+        if (row.nav && !row.files.length) return opdsOpen(row.nav, opdsCat);
+        opdsDetail = row;
+        opdsDetailStatus = Opds.isDownloaded(row) ? tr("已在资料库的「OPDS」文件夹里", "Already in the OPDS folder of your library") : "";
+    }
+
+    // The feed's next page, appended to what is shown.
+    function opdsMore() {
+        if (!opdsHasMore || opdsBusy) return;
+        var token = ++opdsToken;
+        var feed = opdsFeed;
+        opdsBusy = true;
+        opdsStatus = tr("正在加载更多 …", "Loading more …");
+        Opds.openFeed(feed.next, opdsCat, function (err, more) {
+            if (token !== opdsToken) return;
+            opdsBusy = false;
+            if (err) { opdsStatus = opdsError(err); return; }
+            opdsStatus = "";
+            var before = opdsPages;
+            opdsFeed = { title: feed.title, entries: feed.entries.concat(more.entries), next: more.next,
+                         search: feed.search, searchType: feed.searchType };
+            if (opdsPages > before) opdsPage = before;
+        });
+    }
+
+    function opdsDownload(file) {
+        if (opdsDownloading) return;
+        var entry = opdsDetail;
+        opdsDownloading = true;
+        opdsDetailStatus = tr("正在下载 " + file.format + " …", "Downloading " + file.format + " …");
+        Opds.download(entry, file, opdsCat, function (err, res) {
+            opdsDownloading = false;
+            // Re-assign so the list redraws its "Downloaded" marks.
+            if (!err && opdsFeed) opdsFeed = Object.assign({}, opdsFeed);
+            if (opdsDetail !== entry) return;
+            opdsDetailStatus = err ? opdsError(err)
+                : tr("已存入资料库的「OPDS」文件夹。资料库里还没出现的话，连按三下电源键（或重启）刷新一下。",
+                     "Saved to the OPDS folder of your library. If it isn't listed yet, triple-tap the power button (or restart) to refresh the library.");
+        });
+    }
+
+    function opdsStartSearch() {
+        kbDraft = {};
+        kbMode = "search";
+        keyboard.text = "";
+    }
+
+    function opdsStartAdd() {
+        kbDraft = {};
+        kbMode = "url";
+        keyboard.text = "";
+    }
+
+    function kbAccept(t) {
+        var mode = kbMode;
+        if (mode === "search") {
+            kbMode = "";
+            if (!t.trim()) return;
+            var cat = opdsCat;
+            opdsStatus = tr("正在搜索 …", "Searching …");
+            Opds.searchUrl(opdsSearch, t.trim(), cat, function (err, url) {
+                if (err) { opdsStatus = opdsError(err); return; }
+                opdsOpen(url, cat);
+            });
+        } else if (mode === "url") {
+            if (!t.trim()) { kbMode = ""; return; }
+            kbDraft = { url: t.trim() };
+            kbMode = "user";
+            keyboard.text = "";
+        } else if (mode === "user") {
+            kbDraft = { url: kbDraft.url, user: t.trim() };
+            if (!t.trim()) return kbFinishAdd();
+            kbMode = "pass";
+            keyboard.text = "";
+        } else if (mode === "pass") {
+            kbDraft = { url: kbDraft.url, user: kbDraft.user, pass: t };
+            kbFinishAdd();
+        }
+    }
+
+    function kbFinishAdd() {
+        kbMode = "";
+        var c = Opds.addCatalog(kbDraft.url, kbDraft.user, kbDraft.pass);
+        opdsCatalogList = Opds.catalogs();
+        opdsOpen(c.url, c);
+    }
+
+    function opdsRemoveCatalog(c) {
+        Opds.removeCatalog(c);
+        opdsCatalogList = Opds.catalogs();
+        opdsPage = Math.min(opdsPage, opdsPages - 1);
+    }
+
     // ------------------------------------------------------------ pagination
 
     property var pageStarts: [0]
@@ -707,10 +900,14 @@ Rectangle {
             inkSession = false;
             writeBox = Qt.rect(0, 0, 0, 0);
         }
-        var cur = function () { return article ? pageIdx : showVocab ? vocabPage : listPage; };
+        var cur = function () { return article ? pageIdx : showOpds ? opdsPage : showVocab ? vocabPage : listPage; };
         var before = cur();
         if (article) {
             pageIdx = Math.max(0, Math.min(pageStarts.length - 1, pageIdx + delta));
+        } else if (showOpds) {
+            if (opdsDetail || kbMode !== "") return;
+            if (delta > 0 && opdsPage >= opdsPages - 1) { opdsMore(); return; }
+            opdsPage = Math.max(0, Math.min(opdsPages - 1, opdsPage + delta));
         } else if (showVocab) {
             vocabPage = Math.max(0, Math.min(vocabPages - 1, vocabPage + delta));
         } else {
@@ -766,13 +963,13 @@ Rectangle {
     Item {
         id: header
         anchors { top: parent.top; left: parent.left; right: parent.right }
-        height: (root.article || root.showVocab ? 130 : 210) * u
+        height: (root.article || root.showVocab || root.showOpds ? 130 : 210) * u
 
         DisplayMethodArea { anchors.fill: parent; displayMethod: root.modeContent }
 
         // Front page: paper name + date on the left, controls on the right.
         Column {
-            visible: !root.article && !root.showVocab
+            visible: !root.article && !root.showVocab && !root.showOpds
             anchors { left: parent.left; leftMargin: 56 * u; verticalCenter: parent.verticalCenter; verticalCenterOffset: -4 * u }
             spacing: 6 * u
             Text {
@@ -790,7 +987,7 @@ Rectangle {
         }
 
         Row {
-            visible: !root.article && !root.showVocab
+            visible: !root.article && !root.showVocab && !root.showOpds
             anchors { right: parent.right; rightMargin: 28 * u; verticalCenter: parent.verticalCenter }
             spacing: 22 * u
 
@@ -813,6 +1010,13 @@ Rectangle {
             Btn {
                 u: root.u
                 anchors.verticalCenter: parent.verticalCenter
+                text: root.lang === "zh" ? "书库" : "Books"
+                onClicked: root.openOpds()
+            }
+
+            Btn {
+                u: root.u
+                anchors.verticalCenter: parent.verticalCenter
                 text: root.syncing ? (root.lang === "zh" ? "更新中…" : "Updating…") : (root.lang === "zh" ? "更新" : "Update")
                 onClicked: root.update()
             }
@@ -827,16 +1031,49 @@ Rectangle {
 
         // Article / vocabulary: back on the left, controls on the right.
         IconButton {
-            visible: root.article !== null || root.showVocab
+            visible: root.article !== null || root.showVocab || root.showOpds
             u: root.u
             anchors { left: parent.left; leftMargin: 28 * u; verticalCenter: parent.verticalCenter }
             kind: "back"
             label: root.lang === "zh" ? "返回" : "Back"
-            onClicked: root.article ? root.closeArticle() : root.closeVocab()
+            onClicked: root.article ? root.closeArticle() : root.showOpds ? root.opdsBack() : root.closeVocab()
         }
 
         Text {
-            visible: root.showVocab && !root.article
+            visible: root.showOpds && !root.article
+            anchors { centerIn: parent }
+            width: parent.width - 2 * 330 * u
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideRight
+            text: root.kbMode === "search" ? root.tr("搜索", "Search")
+                  : root.kbMode !== "" ? root.tr("添加书库", "Add a catalog")
+                  : root.opdsDetail ? root.opdsDetail.title
+                  : root.opdsFeed ? root.opdsFeed.title : root.tr("书库 · OPDS", "Books · OPDS")
+            font.pixelSize: 44 * root.u
+            font.family: root.lang === "zh" ? "Noto Serif SC" : "EB Garamond"
+            font.weight: Font.Bold
+        }
+
+        Row {
+            visible: root.showOpds && !root.article && root.kbMode === "" && !root.opdsDetail
+            anchors { right: parent.right; rightMargin: 28 * u; verticalCenter: parent.verticalCenter }
+            spacing: 16 * u
+            Btn {
+                u: root.u
+                visible: root.opdsFeed === null
+                text: root.tr("＋ 添加", "+ Add")
+                onClicked: root.opdsStartAdd()
+            }
+            Btn {
+                u: root.u
+                visible: root.opdsSearch !== null
+                text: root.tr("搜索", "Search")
+                onClicked: root.opdsStartSearch()
+            }
+        }
+
+        Text {
+            visible: root.showVocab && !root.article && !root.showOpds
             anchors.centerIn: parent
             text: (root.lang === "zh" ? "生词本 · " + root.vocabList.length + " 个" : "Words · " + root.vocabList.length)
             font.pixelSize: 44 * root.u
@@ -880,7 +1117,7 @@ Rectangle {
 
     Item {
         id: listView
-        visible: !root.article && !root.showVocab
+        visible: !root.article && !root.showVocab && !root.showOpds
         anchors { top: header.bottom; left: parent.left; right: parent.right; bottom: footer.top }
 
         DisplayMethodArea { anchors.fill: parent; displayMethod: root.modeContent }
@@ -1308,7 +1545,7 @@ Rectangle {
 
     Item {
         id: vocabView
-        visible: root.showVocab && !root.article
+        visible: root.showVocab && !root.article && !root.showOpds
         anchors { top: header.bottom; left: parent.left; right: parent.right; bottom: footer.top }
 
         DisplayMethodArea { anchors.fill: parent; displayMethod: root.modeContent }
@@ -1429,6 +1666,243 @@ Rectangle {
         }
     }
 
+    // ------------------------------------------------------------ layout: book catalogs
+
+    Item {
+        id: opdsView
+        visible: root.showOpds && !root.article
+        anchors { top: header.bottom; left: parent.left; right: parent.right; bottom: footer.top }
+
+        DisplayMethodArea { anchors.fill: parent; displayMethod: root.modeContent }
+
+        Item {
+            id: opdsArea
+            anchors { fill: parent; leftMargin: 56 * u; rightMargin: 56 * u; topMargin: 8 * u }
+
+            Text {
+                anchors.centerIn: parent
+                width: parent.width - 80 * u
+                visible: root.opdsStatus !== "" && (root.opdsRows.length === 0 || root.opdsBusy)
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                text: root.opdsStatus
+                font.pixelSize: 38 * u
+                font.family: root.sansFamily
+                z: 2
+            }
+
+            Column {
+                anchors.fill: parent
+                visible: !(root.opdsBusy && root.opdsStatus !== "")
+                Repeater {
+                    model: root.opdsRows.slice(root.opdsPage * root.opdsPerPage, (root.opdsPage + 1) * root.opdsPerPage)
+                    Item {
+                        width: parent.width
+                        height: opdsArea.height / root.opdsPerPage
+                        readonly property bool isCatalog: !!modelData.catalog
+                        readonly property bool isBook: !isCatalog && modelData.files.length > 0
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: root.opdsTap(modelData)
+                        }
+
+                        Image {
+                            id: cover
+                            anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+                            width: 170 * root.u
+                            height: parent.height - 50 * root.u
+                            fillMode: Image.PreserveAspectFit
+                            horizontalAlignment: Image.AlignRight
+                            sourceSize.height: 400
+                            asynchronous: true
+                            source: !isCatalog && modelData.thumb ? modelData.thumb : ""
+                            visible: status === Image.Ready
+                        }
+
+                        Btn {
+                            id: removeBtn
+                            visible: isCatalog && !modelData.catalog.builtin
+                            u: root.u
+                            anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+                            fontPx: 28 * root.u
+                            implicitHeight: 72 * root.u
+                            text: root.tr("删除", "Remove")
+                            onClicked: root.opdsRemoveCatalog(modelData.catalog)
+                        }
+
+                        Column {
+                            anchors {
+                                left: parent.left
+                                right: cover.visible ? cover.left : removeBtn.visible ? removeBtn.left : parent.right
+                                rightMargin: 36 * root.u
+                                verticalCenter: parent.verticalCenter
+                            }
+                            spacing: 10 * root.u
+
+                            Text {
+                                width: parent.width
+                                text: isCatalog ? modelData.catalog.name : modelData.title
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                                font.pixelSize: 44 * root.u
+                                font.weight: Font.Bold
+                                font.family: root.sansFamily
+                                lineHeight: 1.05
+                            }
+                            Text {
+                                width: parent.width
+                                visible: text !== ""
+                                text: isCatalog ? modelData.catalog.url : modelData.author
+                                elide: Text.ElideRight
+                                font.pixelSize: 30 * root.u
+                                font.family: isCatalog ? "Noto Sans" : root.serifFamily
+                                font.weight: Font.Medium
+                                font.italic: !isCatalog
+                            }
+                            Text {
+                                width: parent.width
+                                visible: !isCatalog && text !== ""
+                                text: isCatalog ? "" : modelData.summary
+                                textFormat: Text.PlainText
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                                font.pixelSize: 28 * root.u
+                                font.family: root.serifFamily
+                            }
+                            // Formats for books, "›" for folders of the catalog.
+                            Row {
+                                visible: !isCatalog
+                                spacing: 12 * root.u
+                                Repeater {
+                                    model: isBook ? modelData.files : []
+                                    Rectangle {
+                                        width: fmt.implicitWidth + 20 * root.u
+                                        height: fmt.implicitHeight + 6 * root.u
+                                        radius: 6 * root.u
+                                        color: "black"
+                                        Text {
+                                            id: fmt
+                                            anchors.centerIn: parent
+                                            text: modelData.format
+                                            color: "white"
+                                            font.pixelSize: 22 * root.u
+                                            font.family: root.sansFamily
+                                            font.weight: Font.Bold
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: isBook ? (Opds.isDownloaded(modelData) ? root.tr("✓ 已下载", "✓ Downloaded") : "")
+                                                 : root.tr("打开 ›", "Open ›")
+                                    font.pixelSize: 24 * root.u
+                                    font.family: root.sansFamily
+                                    font.weight: Font.Bold
+                                }
+                            }
+                        }
+
+                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 2 * root.u; color: "black" }
+                    }
+                }
+            }
+        }
+
+        // A book's page: cover, description, one download button per format.
+        Rectangle {
+            id: opdsDetailView
+            anchors.fill: parent
+            visible: root.opdsDetail !== null
+            color: "white"
+
+            MouseArea { anchors.fill: parent }     // keep taps off the list underneath
+
+            Image {
+                id: bigCover
+                anchors { top: parent.top; right: parent.right; topMargin: 48 * u; rightMargin: 56 * u }
+                width: 420 * u
+                height: 600 * u
+                fillMode: Image.PreserveAspectFit
+                verticalAlignment: Image.AlignTop
+                sourceSize.height: 1000
+                asynchronous: true
+                source: root.opdsDetail ? (root.opdsDetail.cover || root.opdsDetail.thumb || "") : ""
+                visible: status === Image.Ready
+            }
+
+            Column {
+                anchors {
+                    top: parent.top; left: parent.left; topMargin: 48 * u; leftMargin: 56 * u
+                    right: bigCover.visible ? bigCover.left : parent.right
+                    rightMargin: bigCover.visible ? 48 * u : 56 * u
+                }
+                spacing: 22 * u
+
+                Text {
+                    width: parent.width
+                    text: root.opdsDetail ? root.opdsDetail.title : ""
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 56 * root.u
+                    font.weight: Font.Bold
+                    font.family: root.sansFamily
+                    lineHeight: 1.05
+                }
+                Text {
+                    width: parent.width
+                    visible: text !== ""
+                    text: root.opdsDetail ? root.opdsDetail.author : ""
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 36 * root.u
+                    font.family: root.serifFamily
+                    font.italic: true
+                }
+                Flow {
+                    width: parent.width
+                    spacing: 18 * root.u
+                    Repeater {
+                        model: root.opdsDetail ? root.opdsDetail.files : []
+                        Btn {
+                            u: root.u
+                            text: root.tr("下载 ", "Download ") + modelData.format
+                            checked: index === 0
+                            dim: root.opdsDownloading
+                            onClicked: root.opdsDownload(modelData)
+                        }
+                    }
+                }
+                Text {
+                    width: parent.width
+                    visible: text !== ""
+                    text: root.opdsDetailStatus
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 32 * root.u
+                    font.family: root.sansFamily
+                    font.weight: Font.Bold
+                    lineHeight: 1.2
+                }
+            }
+
+            Text {
+                anchors {
+                    left: parent.left; right: parent.right; bottom: parent.bottom
+                    leftMargin: 56 * u; rightMargin: 56 * u; bottomMargin: 40 * u
+                    top: bigCover.visible ? bigCover.bottom : undefined
+                    topMargin: 48 * u
+                }
+                height: bigCover.visible ? undefined : parent.height * 0.5
+                text: root.opdsDetail ? root.opdsDetail.summary : ""
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                elide: Text.ElideRight
+                font.pixelSize: 34 * root.u
+                font.family: root.serifFamily
+                lineHeight: 1.3
+            }
+        }
+    }
+
     // ------------------------------------------------------------ layout: footer
 
     Item {
@@ -1442,7 +1916,9 @@ Rectangle {
             u: root.u
             anchors { left: parent.left; leftMargin: 36 * u; verticalCenter: parent.verticalCenter }
             text: root.lang === "zh" ? "‹ 上一页" : "‹ Prev"
-            dim: root.article ? root.pageIdx === 0 : root.showVocab ? root.vocabPage === 0 : root.listPage === 0
+            dim: root.article ? root.pageIdx === 0
+                 : root.showOpds ? root.opdsPage === 0 || root.opdsDetail !== null || root.kbMode !== ""
+                 : root.showVocab ? root.vocabPage === 0 : root.listPage === 0
             onClicked: if (byPen || !root.penNear()) root.turn(-1)
         }
         Text {
@@ -1450,6 +1926,7 @@ Rectangle {
             text: root.article
                   ? (root.articleStatus !== "" && body.text !== "" ? root.articleStatus + "    " : "") +
                     (root.pageIdx + 1) + " / " + root.pageStarts.length
+                  : root.showOpds ? (root.opdsDetail || root.kbMode !== "" ? "" : (root.opdsPage + 1) + " / " + root.opdsPages + (root.opdsHasMore ? "+" : ""))
                   : root.showVocab ? (root.vocabPage + 1) + " / " + root.vocabPages
                   : (root.listPage + 1) + " / " + root.listPages
             font.pixelSize: 32 * u
@@ -1461,8 +1938,48 @@ Rectangle {
             anchors { right: parent.right; rightMargin: 36 * u; verticalCenter: parent.verticalCenter }
             text: root.lang === "zh" ? "下一页 ›" : "Next ›"
             dim: root.article ? root.pageIdx >= root.pageStarts.length - 1
+                 : root.showOpds ? (root.opdsPage >= root.opdsPages - 1 && !root.opdsHasMore) || root.opdsDetail !== null || root.kbMode !== ""
                  : root.showVocab ? root.vocabPage >= root.vocabPages - 1 : root.listPage >= root.listPages - 1
             onClicked: if (byPen || !root.penNear()) root.turn(1)
+        }
+    }
+
+    // ------------------------------------------------------------ on-screen keyboard
+
+    Rectangle {
+        anchors { top: header.bottom; left: parent.left; right: parent.right; bottom: footer.top }
+        visible: root.kbMode !== ""
+        color: "white"
+        z: 20
+        MouseArea { anchors.fill: parent }
+
+        DisplayMethodArea { anchors.fill: parent; displayMethod: root.modeUi }
+
+        Text {
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: 56 * u }
+            wrapMode: Text.Wrap
+            text: root.kbMode === "search" ? root.tr("输入书名或作者（英文、拼音）。", "Type a title or an author.")
+                  : root.kbMode === "url" ? root.tr("输入 OPDS 书库地址，例如 Calibre 的 http://192.168.1.10:8080/opds",
+                                                   "Enter the address of an OPDS catalog, e.g. Calibre's http://192.168.1.10:8080/opds")
+                  : root.kbMode === "user" ? root.tr("用户名（不需要登录就直接按确定）", "User name (leave empty if the catalog needs no login)")
+                  : root.tr("密码", "Password")
+            font.pixelSize: 34 * u
+            font.family: root.sansFamily
+            lineHeight: 1.3
+        }
+
+        Keyboard {
+            id: keyboard
+            u: root.u
+            anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: 28 * u }
+            height: implicitHeight
+            masked: root.kbMode === "pass"
+            label: root.kbMode === "search" ? root.tr("搜索", "Search") : root.kbMode === "url" ? root.tr("地址", "Address")
+                   : root.kbMode === "user" ? root.tr("用户名", "User name") : root.tr("密码", "Password")
+            okText: root.kbMode === "search" ? root.tr("搜索", "Search") : root.tr("确定", "OK")
+            cancelText: root.tr("取消", "Cancel")
+            onAccepted: (t) => root.kbAccept(t)
+            onCanceled: root.kbMode = ""
         }
     }
 
