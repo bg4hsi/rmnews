@@ -17,6 +17,11 @@ ssh -o ConnectTimeout=8 "$HOST" true || {
 }
 ssh "$HOST" 'printf "firmware: "; sed -n "s/^IMG_VERSION=//p" /etc/os-release | tr -d "\""'
 
+# Firmware 3.30's stock xochitl segfaults when stopped; without this the emergency service
+# reboots the tablet halfway through the rebuild. Masked for this boot only.
+scp -q "$(dirname "$0")/../tablet/xovi-no-emergency.sh" "$HOST:/home/root/xovi/scripts/pre-start/"
+ssh "$HOST" /home/root/xovi/scripts/pre-start/xovi-no-emergency.sh
+
 say "Rebuilding the xovi hashtable (the screen restarts; unlock the tablet if asked)"
 ssh "$HOST" 'echo | timeout 300 /home/root/xovi/rebuild_hashtable 2>&1 | grep -E "Set system version|Hashtab saved|rebuilt" || true'
 

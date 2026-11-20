@@ -724,6 +724,8 @@ Rectangle {
         if (err === "401") return tr("需要用户名和密码（或密码不对）", "Needs a user name and password (or they are wrong)");
         if (err === "not an OPDS catalog") return tr("这个地址不是 OPDS 书库", "That address is not an OPDS catalog");
         if (err === "not an EPUB or PDF file") return tr("下载到的不是 EPUB 或 PDF 文件", "The download is not an EPUB or PDF file");
+        if (/^HTTP 5\d\d$/.test(err))
+            return tr("书库网站暂时无法访问（可能在维护），请稍后再试", "The catalog's site is down for now (maintenance?). Try again later") + "  " + err;
         return tr("打不开（离线？）", "Could not load (offline?)") + "  " + err;
     }
 

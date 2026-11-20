@@ -17,7 +17,7 @@ if [[ "${1:-}" == "deploy" ]]; then
     DEST=/home/root/xovi/exthome/appload/rmnews
     ssh "$HOST" "mkdir -p $DEST /home/root/.local/share/rmnews/cache"
     scp -q build/rmnews/* "$HOST:$DEST/"
-    scp -q tablet/rmnews-cleanup.sh "$HOST:/home/root/xovi/scripts/pre-start/"
+    scp -q tablet/rmnews-cleanup.sh tablet/xovi-no-emergency.sh "$HOST:/home/root/xovi/scripts/pre-start/"
     if [[ -d build/dict ]] && ! ssh "$HOST" "test -f $DEST/dict/ab.json"; then
         echo "uploading dictionary ..."
         scp -qr build/dict "$HOST:$DEST/"
